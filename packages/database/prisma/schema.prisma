@@ -1,0 +1,377 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+enum SourceType {
+  ORGANIZATION
+  MEDIA
+  RESEARCH
+  CONSULTING
+  BANKING
+  ACADEMIC
+}
+
+enum FeedType {
+  RSS
+  API
+  SITEMAP
+  WEB
+}
+
+enum Relevance {
+  HIGH
+  MEDIUM
+  LOW
+  IRRELEVANT
+}
+
+enum ContentTypeCode {
+  NEWS
+  RESEARCH
+  REPORT
+  TREND
+  CASE
+  PRODUCT
+  OPINION
+  ANALYSIS
+  EVENT
+  REGULATION
+  DATA
+}
+
+model Article {
+  id            String   @id @default(uuid()) @db.Uuid
+  title         String   @db.Text
+  originalTitle String?  @map("original_title") @db.Text
+  url           String   @db.Text
+  canonicalUrl  String   @unique @map("canonical_url") @db.Text
+  author        String?  @db.Text
+  publishedAt   DateTime? @map("published_at") @db.Timestamptz(6)
+  language      String   @db.VarChar(12)
+  excerpt       String?  @db.Text
+  imageUrl      String?  @map("image_url") @db.Text
+  contentHash   String   @map("content_hash") @db.Char(64)
+  status        String   @default("NEW") @db.VarChar(24)
+  contentTypeId String   @map("content_type_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  contentType     ContentType      @relation(fields: [contentTypeId], references: [id], onDelete: Restrict)
+  articleSources  ArticleSource[]
+  articleTopics   ArticleTopic[]
+  articleTags     ArticleTag[]
+  analyses        ArticleAnalysis[]
+  feedback        UserFeedback[]
+  collectionItems CollectionItem[]
+  digestArticles  DigestArticle[]
+
+  @@index([status, publishedAt(sort: Desc)])
+  @@index([publishedAt(sort: Desc)])
+  @@index([language])
+  @@index([contentHash])
+  @@map("articles")
+}
+
+model ArticleSource {
+  id                    String    @id @default(uuid()) @db.Uuid
+  articleId             String    @map("article_id") @db.Uuid
+  sourceId              String    @map("source_id") @db.Uuid
+  sourceFeedId          String?   @map("source_feed_id") @db.Uuid
+  sourceUrl             String    @map("source_url") @db.Text
+  firstSeenAt           DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  contentSnapshotRef    String?   @map("content_snapshot_ref") @db.Text
+  contentRetentionUntil DateTime? @map("content_retention_until") @db.Timestamptz(6)
+
+  article    Article     @relation(fields: [articleId], references: [id], onDelete: Restrict)
+  source     Source      @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  sourceFeed SourceFeed? @relation(fields: [sourceFeedId, sourceId], references: [id, sourceId], onDelete: Restrict)
+
+  @@unique([articleId, sourceId, sourceUrl])
+  @@index([sourceId, firstSeenAt(sort: Desc)])
+  @@index([sourceFeedId])
+  @@map("article_sources")
+}
+
+model ArticleTopic {
+  articleId String  @map("article_id") @db.Uuid
+  topicId   String  @map("topic_id") @db.Uuid
+  confidence Decimal @db.Decimal(4, 3)
+  isPrimary Boolean  @default(false) @map("is_primary")
+
+  article Article @relation(fields: [articleId], references: [id], onDelete: Restrict)
+  topic   Topic   @relation(fields: [topicId], references: [id], onDelete: Restrict)
+
+  @@id([articleId, topicId])
+  @@index([topicId, articleId])
+  @@map("article_topics")
+}
+
+model ArticleTag {
+  articleId String  @map("article_id") @db.Uuid
+  tagId     String  @map("tag_id") @db.Uuid
+  confidence Decimal @db.Decimal(4, 3)
+
+  article Article @relation(fields: [articleId], references: [id], onDelete: Restrict)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Restrict)
+
+  @@id([articleId, tagId])
+  @@index([tagId, articleId])
+  @@map("article_tags")
+}
+
+model ArticleAnalysis {
+  id                   String    @id @default(uuid()) @db.Uuid
+  articleId            String    @map("article_id") @db.Uuid
+  relevance            Relevance
+  relevanceScore       Decimal   @map("relevance_score") @db.Decimal(5, 2)
+  relevanceReason      String    @map("relevance_reason") @db.Text
+  summary              String    @db.Text
+  businessContext      String    @map("business_context") @db.Text
+  learningImplications String    @map("learning_implications") @db.Text
+  whyItMatters         String    @map("why_it_matters") @db.Text
+  keySignals           Json      @map("key_signals") @db.JsonB
+  aiModel              String    @map("ai_model") @db.VarChar(120)
+  promptVersion        String    @map("prompt_version") @db.VarChar(64)
+  analyzedAt           DateTime  @default(now()) @map("analyzed_at") @db.Timestamptz(6)
+
+  article Article @relation(fields: [articleId], references: [id], onDelete: Restrict)
+
+  @@index([articleId, analyzedAt(sort: Desc)])
+  @@index([relevance, relevanceScore(sort: Desc)])
+  @@index([promptVersion])
+  @@map("article_analysis")
+}
+
+model Topic {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @db.VarChar(160)
+  slug        String   @unique @db.VarChar(160)
+  description String?  @db.Text
+  parentId    String?  @map("parent_id") @db.Uuid
+  isActive    Boolean  @default(true) @map("is_active")
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  parent   Topic?        @relation("TopicHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children Topic[]        @relation("TopicHierarchy")
+  articles ArticleTopic[]
+
+  @@index([parentId, sortOrder])
+  @@index([isActive, sortOrder])
+  @@map("topics")
+}
+
+model Tag {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @db.VarChar(160)
+  slug        String   @unique @db.VarChar(160)
+  description String?  @db.Text
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  articles ArticleTag[]
+
+  @@index([isActive, name])
+  @@map("tags")
+}
+
+model ContentType {
+  id          String          @id @default(uuid()) @db.Uuid
+  code        ContentTypeCode @unique
+  name        String          @unique @db.VarChar(80)
+  description String?         @db.Text
+  isActive    Boolean         @default(true) @map("is_active")
+  sortOrder   Int             @default(0) @map("sort_order")
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  articles Article[]
+
+  @@index([isActive, sortOrder])
+  @@map("content_types")
+}
+
+model Source {
+  id          String     @id @default(uuid()) @db.Uuid
+  name        String     @db.VarChar(200)
+  slug        String     @unique @db.VarChar(200)
+  url         String     @db.Text
+  country     String?    @db.VarChar(2)
+  language    String?    @db.VarChar(12)
+  sourceType  SourceType @map("source_type")
+  priority    Int        @default(0) @db.SmallInt
+  description String?    @db.Text
+  isActive    Boolean    @default(true) @map("is_active")
+  trustScore  Decimal?   @map("trust_score") @db.Decimal(4, 3)
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  feeds          SourceFeed[]
+  articleSources ArticleSource[]
+
+  @@index([isActive, priority(sort: Desc)])
+  @@index([sourceType])
+  @@map("sources")
+}
+
+model SourceFeed {
+  id            String   @id @default(uuid()) @db.Uuid
+  sourceId      String   @map("source_id") @db.Uuid
+  feedType      FeedType @map("feed_type")
+  url           String   @db.Text
+  isActive      Boolean  @default(true) @map("is_active")
+  lastCheckedAt DateTime? @map("last_checked_at") @db.Timestamptz(6)
+  lastSuccessAt DateTime? @map("last_success_at") @db.Timestamptz(6)
+  lastError     String?  @map("last_error") @db.Text
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  source          Source            @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  articleSources  ArticleSource[]
+  collectionItems CollectionItem[]
+
+  @@unique([sourceId, url])
+  @@unique([id, sourceId])
+  @@index([isActive, feedType])
+  @@index([sourceId])
+  @@map("source_feeds")
+}
+
+model RelevanceRule {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique @db.VarChar(200)
+  ruleType  String   @map("rule_type") @db.VarChar(40)
+  ruleText  String   @map("rule_text") @db.Text
+  priority  Int      @default(0) @db.SmallInt
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([isActive, priority(sort: Desc)])
+  @@map("relevance_rules")
+}
+
+model AiPrompt {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(160)
+  purpose   String   @db.VarChar(100)
+  promptText String  @map("prompt_text") @db.Text
+  version   String   @db.VarChar(64)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([name, version])
+  @@map("ai_prompts")
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String   @db.VarChar(320)
+  name      String   @db.VarChar(200)
+  role      UserRole
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  feedback UserFeedback[]
+
+  @@index([role, isActive])
+  @@map("users")
+}
+
+model UserFeedback {
+  id           String   @id @default(uuid()) @db.Uuid
+  articleId    String   @map("article_id") @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  feedbackType String   @map("feedback_type") @db.VarChar(40)
+  comment      String?  @db.Text
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  article Article @relation(fields: [articleId], references: [id], onDelete: Restrict)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([articleId, createdAt(sort: Desc)])
+  @@index([feedbackType, createdAt(sort: Desc)])
+  @@index([userId])
+  @@map("user_feedback")
+}
+
+model CollectionRun {
+  id                String    @id @default(uuid()) @db.Uuid
+  startedAt         DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt        DateTime? @map("finished_at") @db.Timestamptz(6)
+  status            String    @db.VarChar(24)
+  sourcesChecked    Int       @default(0) @map("sources_checked")
+  articlesFound     Int       @default(0) @map("articles_found")
+  articlesNew       Int       @default(0) @map("articles_new")
+  articlesDuplicate Int       @default(0) @map("articles_duplicate")
+  articlesRelevant  Int       @default(0) @map("articles_relevant")
+  errorCount        Int       @default(0) @map("error_count")
+  errorLog          String?   @map("error_log") @db.Text
+
+  items CollectionItem[]
+
+  @@index([status, startedAt(sort: Desc)])
+  @@index([startedAt(sort: Desc)])
+  @@map("collection_runs")
+}
+
+model CollectionItem {
+  id              String  @id @default(uuid()) @db.Uuid
+  collectionRunId String  @map("collection_run_id") @db.Uuid
+  sourceFeedId    String  @map("source_feed_id") @db.Uuid
+  articleId       String? @map("article_id") @db.Uuid
+  status          String  @db.VarChar(24)
+  error           String? @db.Text
+
+  collectionRun CollectionRun @relation(fields: [collectionRunId], references: [id], onDelete: Restrict)
+  sourceFeed    SourceFeed    @relation(fields: [sourceFeedId], references: [id], onDelete: Restrict)
+  article       Article?      @relation(fields: [articleId], references: [id], onDelete: Restrict)
+
+  @@unique([collectionRunId, sourceFeedId, articleId])
+  @@index([collectionRunId])
+  @@index([sourceFeedId, status])
+  @@map("collection_items")
+}
+
+model Digest {
+  id          String   @id @default(uuid()) @db.Uuid
+  title       String   @db.VarChar(300)
+  periodStart DateTime @map("period_start") @db.Date
+  periodEnd   DateTime @map("period_end") @db.Date
+  summary     String?  @db.Text
+  status      String   @db.VarChar(24)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  articles DigestArticle[]
+
+  @@index([status, periodStart(sort: Desc)])
+  @@map("digests")
+}
+
+model DigestArticle {
+  digestId   String @map("digest_id") @db.Uuid
+  articleId  String @map("article_id") @db.Uuid
+  position   Int
+  editorNote String? @map("editor_note") @db.Text
+
+  digest  Digest  @relation(fields: [digestId], references: [id], onDelete: Restrict)
+  article Article @relation(fields: [articleId], references: [id], onDelete: Restrict)
+
+  @@id([digestId, articleId])
+  @@unique([digestId, position])
+  @@index([articleId])
+  @@map("digest_articles")
+}

@@ -1,0 +1,17 @@
+{
+  "name": "learning-intelligence",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "lint": "npm run lint --workspace=@learning-intelligence/web",
+    "build": "npm run build --workspace=@learning-intelligence/web",
+    "db:generate": "npm run prisma:generate --workspace=@learning-intelligence/database",
+    "db:validate": "npm run prisma:validate --workspace=@learning-intelligence/database",
+    "db:migrate": "npm run prisma:migrate:dev --workspace=@learning-intelligence/database",
+    "db:seed": "npm run prisma:seed --workspace=@learning-intelligence/database"
+  }
+}
