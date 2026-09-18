@@ -665,9 +665,15 @@ SPECIAL RULE FOR AI
 
 AI is a strategically important topic for the journal.
 
-However, the presence of AI or a new AI technology alone does NOT make an article relevant.
+However, AI does NOT override the MAIN SUBJECT principle.
 
-AI materials are relevant when they provide a meaningful signal in at least one of these areas:
+The first question is always:
+
+"What is the article primarily about?"
+
+Only after identifying the main subject should you evaluate whether the AI-related content creates a sufficiently direct learning, skills or capability signal.
+
+AI materials are relevant when the article substantively addresses at least one of these areas:
 
 - how AI changes the skills employees need;
 - which new AI-related capabilities organizations need to build;
@@ -688,59 +694,92 @@ AI materials are relevant when they provide a meaningful signal in at least one 
 - evidence about the effectiveness, limitations or risks of AI in employee learning or development;
 - AI-driven changes in skills or roles specifically within banking or financial services.
 
-There are two valid AI paths to relevance:
+IMPORTANT:
 
-1. AI
-→ CHANGE IN WORK / ROLES / SKILLS
-→ LEARNING IMPLICATION
+Do NOT treat every article about AI-driven automation, task redesign or workforce transformation as relevant.
 
-2. AI
-→ CHANGE IN LEARNING / L&D
-→ LEARNING FUNCTION IMPLICATION
+If the MAIN SUBJECT is:
 
-Both are relevant.
+- supply-chain operations;
+- manufacturing;
+- logistics;
+- customer operations;
+- software engineering;
+- sales operations;
+- financial operations;
+- productivity;
+- cost reduction;
+- process redesign;
+- automation of business processes;
+- elimination of labour shortages;
+- operational efficiency;
 
-Do not require an article to mention "training", "learning" or "L&D" if it provides strong evidence that AI is changing the capabilities employees need.
+then the article is normally IRRELEVANT unless employee skills, capabilities, roles or workforce development are themselves a substantive subject of the article.
 
-At the same time, do not infer a learning implication merely because AI adoption is discussed.
+The following logic is NOT sufficient on its own:
+
+AI
+→ changes tasks
+→ employees need different skills
+→ therefore companies need training
+
+This is an inferred learning implication and must NOT be used to rescue an otherwise irrelevant business or industry article.
 
 For example:
 
-"AI agents are increasingly performing routine analytical tasks."
+"Agentic AI can automate routine tasks in supply chains, helping companies address labour shortages."
 
-This alone may be insufficient.
+IRRELEVANT.
 
-But:
+"Companies should redesign supply-chain workflows around AI agents to improve operational efficiency."
 
-"AI agents are increasingly performing routine analytical tasks, while analysts are expected to shift toward validation, judgment and higher-level problem solving."
+IRRELEVANT.
 
-This contains a concrete skills signal and may be relevant.
+"AI automation is changing supply-chain operations."
 
-For AI-related articles, pay particular attention to:
+IRRELEVANT unless the article substantively examines the resulting employee roles, skills or capability requirements.
 
-- changing task composition;
-- changing skill requirements;
-- emerging roles;
-- declining or expanding skills;
-- human-AI collaboration;
-- AI literacy;
-- reskilling;
-- capability building;
-- workforce transformation;
-- learning technology;
-- evidence about AI effectiveness in learning.
+By contrast:
 
-Do not assume that every AI development requires employee training.
+"AI automation is changing supply-chain jobs. Research identifies specific skills that workers will need as routine execution tasks decline and new analytical and AI-governance responsibilities emerge."
 
-The article must provide evidence for the connection.
+Potentially RELEVANT.
 
-An article about:
-- a new AI model;
-- a new AI product;
-- an AI funding round;
-- an AI corporate announcement;
+The difference is not the presence of AI.
 
-is normally IRRELEVANT unless it also contains a meaningful workforce, capability, skills or learning signal.
+The difference is whether the article itself treats employee skills, roles or capabilities as a substantive subject.
+
+There are two valid AI paths to relevance:
+
+1. AI
+→ SUBSTANTIVE CHANGE IN EMPLOYEE WORK / ROLES / SKILLS
+→ DIRECT LEARNING OR CAPABILITY IMPLICATION
+
+2. AI
+→ SUBSTANTIVE CHANGE IN LEARNING / L&D
+→ LEARNING FUNCTION IMPLICATION
+
+In both cases, the employee capability or learning dimension must be a meaningful part of the article itself.
+
+Do NOT infer a learning implication merely because:
+
+- AI is being adopted;
+- tasks are being automated;
+- productivity may increase;
+- some jobs may disappear;
+- companies may need to reskill;
+- workers may need new skills;
+- managers may need to adapt.
+
+These statements must be substantively developed and evidenced in the article.
+
+An article about a business problem does not become a learning-intelligence article simply because AI changes the way that business problem is solved.
+
+AI is a relevant topic, but it is NOT a relevance shortcut.
+
+When the article is primarily about another business or industry problem and the learning connection is secondary, incidental or inferred:
+
+→ IRRELEVANT.
 
 ==================================================
 SPECIAL RULE FOR BUSINESS TRANSFORMATION

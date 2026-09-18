@@ -1,32 +1,29 @@
 import crypto from "node:crypto";
 
 import { prisma } from "@learning-intelligence/database";
-import * as cheerio from "cheerio";
 
-import { analyzeArticle } from "./analyze-article.js";
+import { extractArticle } from "./article-extractor.js";
+import { SOURCES } from "./sources.js";
 import { translateArticle } from "./translate-article.js";
 
-const BASE_URL = "https://www.weforum.org/sitemap/articles/";
-const SOURCE_SLUG = "world-economic-forum";
-
-const MAX_PAGES = 1;
 const LOOKBACK_HOURS = 24;
-
-// Выпуск формируется по московскому времени.
 const ISSUE_TIME_ZONE = "Europe/Moscow";
 
-type Article = {
+type SourceConfig = (typeof SOURCES)[number];
+
+type Candidate = {
+  sourceSlug: string;
   title: string;
   url: string;
+  publishedAt: string | null;
+  description: string;
 };
 
-type ArticleDetails = Article & {
+type ExtractedArticle = {
+  title: string;
   author: string | null;
   publishedAt: string | null;
-  updatedAt: string | null;
-  excerpt: string | null;
-  imageUrl: string | null;
-  originalContent: string | null;
+  text: string;
 };
 
 function getMoscowDate(): string {
@@ -42,7 +39,7 @@ function getDateOnly(dateString: string): Date {
   return new Date(`${dateString}T00:00:00.000Z`);
 }
 
-async function fetchHtml(url: string): Promise<string> {
+async function fetchFeed(url: string): Promise<string> {
   const MAX_ATTEMPTS = 3;
   const RETRY_DELAY_MS = 2000;
 
@@ -51,19 +48,21 @@ async function fetchHtml(url: string): Promise<string> {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       console.log(
-        `Fetching: ${url} (attempt ${attempt}/${MAX_ATTEMPTS})`,
+        `Fetching RSS feed: ${url} (attempt ${attempt}/${MAX_ATTEMPTS})`,
       );
 
       const response = await fetch(url, {
         headers: {
           "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
+          Accept:
+            "text/html,application/xhtml+xml,application/rss+xml,application/atom+xml,application/xml,text/xml",
         },
       });
 
       if (!response.ok) {
         throw new Error(
-          `Request failed: ${response.status} ${response.statusText}`,
+          `HTTP ${response.status}: ${response.statusText}`,
         );
       }
 
@@ -72,15 +71,11 @@ async function fetchHtml(url: string): Promise<string> {
       lastError = error;
 
       console.error(
-        `Request failed (attempt ${attempt}/${MAX_ATTEMPTS}): ${url}`,
+        `RSS feed request failed (attempt ${attempt}/${MAX_ATTEMPTS}): ${url}`,
       );
       console.error(error);
 
       if (attempt < MAX_ATTEMPTS) {
-        console.log(
-          `Retrying in ${RETRY_DELAY_MS / 1000} seconds...`,
-        );
-
         await new Promise((resolve) =>
           setTimeout(resolve, RETRY_DELAY_MS),
         );
@@ -93,210 +88,282 @@ async function fetchHtml(url: string): Promise<string> {
     : new Error(String(lastError));
 }
 
-async function fetchPage(page: number): Promise<Article[]> {
-  const url =
-    page === 1 ? BASE_URL : `${BASE_URL}?page=${page}`;
-
-  console.log(`Fetching sitemap page ${page}: ${url}`);
-
-  const html = await fetchHtml(url);
-  const $ = cheerio.load(html);
-
-  const articles = new Map<string, string>();
-
-  $("a[href]").each((_, element) => {
-    const href = $(element).attr("href");
-    const title = $(element).text().replace(/\s+/g, " ").trim();
-
-    if (!href || !title) {
-      return;
-    }
-
-    const articleUrl = new URL(href, BASE_URL);
-
-    if (
-      !articleUrl.href.startsWith(
-        "https://www.weforum.org/stories/",
-      )
-    ) {
-      return;
-    }
-
-    if (title.length < 20) {
-      return;
-    }
-
-    articleUrl.hash = "";
-    articleUrl.search = "";
-
-    articles.set(articleUrl.href, title);
-  });
-
-  return Array.from(articles.entries()).map(([url, title]) => ({
-    url,
-    title,
-  }));
-}
-
-function findStructuredData(
-  html: string,
-  key: string,
-): string | null {
-  const marker = `"${key}"`;
-  const index = html.indexOf(marker);
-
-  if (index === -1) {
-    return null;
+function normalizeUrl(url: string, baseUrl: string): string {
+  try {
+    const parsed = new URL(url, baseUrl);
+    parsed.hash = "";
+    parsed.search = "";
+    return parsed.toString();
+  } catch {
+    return url;
   }
-
-  const afterKey = html.slice(index + marker.length);
-  const match = afterKey.match(/:\s*"([^"]+)"/);
-
-  return match?.[1] ?? null;
 }
 
-function findAuthor(html: string): string | null {
-  const match = html.match(
-    /"author":\[\{"@type":"Person","name":"([^"]+)"/,
-  );
-
-  if (match?.[1]) {
-    return match[1];
-  }
-
-  const creatorMatch = html.match(
-    /"creator":\["([^"]+)"\]/,
-  );
-
-  return creatorMatch?.[1] ?? null;
-}
-
-function findImage(html: string): string | null {
-  const match = html.match(
-    /"image":"(https:\/\/&#x61;sset&#x73;\.&#x77;eforu&#x6D;\.&#x6F;r&#x67;\/[^"]+)"/,
-  );
-
-  return match?.[1] ?? null;
-}
-
-function findDescription(html: string): string | null {
-  const match = html.match(
-    /"description":"((?:\\.|[^"\\])*)"/,
-  );
-
-  if (!match?.[1]) {
-    return null;
-  }
-
-  return match[1]
-    .replace(/\\"/g, '"')
-    .replace(/\\n/g, " ")
+function cleanTitle(title: string): string {
+  return title
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
-/**
- * Извлекает основной текст статьи WEF.
- *
- * Используем несколько вариантов структуры страницы,
- * потому что HTML WEF может меняться.
- */
-function extractArticleContent(html: string): string | null {
-  const $ = cheerio.load(html);
-
-  const selectors = [
-    "article",
-    '[data-testid="article-content"]',
-    '[data-testid="story-content"]',
-    '[class*="article-content"]',
-    '[class*="story-content"]',
-    "main",
-  ];
-
-  for (const selector of selectors) {
-    const element = $(selector).first();
-
-    if (!element.length) {
-      continue;
-    }
-
-    const paragraphs = element
-      .find("p")
-      .map((_, paragraph) =>
-        $(paragraph)
-          .text()
-          .replace(/\s+/g, " ")
-          .trim(),
-      )
-      .get()
-      .filter((text) => text.length > 30);
-
-    if (paragraphs.length >= 3) {
-      const content = paragraphs.join("\n\n").trim();
-
-      if (content.length >= 500) {
-        return content;
-      }
-    }
-  }
-
-  /**
-   * Запасной вариант:
-   * собираем все достаточно длинные <p> на странице.
-   */
-  const paragraphs = $("p")
-    .map((_, paragraph) =>
-      $(paragraph)
-        .text()
-        .replace(/\s+/g, " ")
-        .trim(),
-    )
-    .get()
-    .filter((text) => text.length > 40);
-
-  const uniqueParagraphs = Array.from(
-    new Set(paragraphs),
+function cleanXmlText(value: string | undefined): string {
+  return cleanTitle(
+    (value ?? "")
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+      .replace(/<[^>]+>/g, " "),
   );
-
-  const content = uniqueParagraphs.join("\n\n").trim();
-
-  if (content.length >= 500) {
-    return content;
-  }
-
-  return null;
 }
 
-async function fetchArticleDetails(
-  article: Article,
-): Promise<ArticleDetails> {
-  const html = await fetchHtml(article.url);
+function isInfrastructureCandidate(title: string): boolean {
+  const normalized = title.toLowerCase();
 
-  const publishedAt =
-    findStructuredData(html, "datePublished") ??
-    findStructuredData(html, "publishedAt");
+  const excludedPatterns = [
+    /\bdata cent(er|ers)\b/,
+    /\bдата[- ]цент(р|ры)\b/,
+    /\bgpu\b/,
+    /\btpu\b/,
+    /\bcompute\b/,
+    /\bcomputing\b/,
+    /\binference\b/,
+    /\bsemiconductor/,
+    /\bchip(s)?\b/,
+    /\bчип(ы|ов|ах)?\b/,
+    /\benergy for ai\b/,
+    /\bai energy\b/,
+    /\belectricity.*ai\b/,
+    /\bai.*electricity\b/,
+    /\bpower grid\b/,
+    /\bgrid.*ai\b/,
+  ];
 
-  const updatedAt =
-    findStructuredData(html, "dateModified");
-
-  const originalContent = extractArticleContent(html);
-
-  console.log(
-    `Extracted article text: ${
-      originalContent
-        ? `${originalContent.length} characters`
-        : "not found"
-    }`,
+  return excludedPatterns.some((pattern) =>
+    pattern.test(normalized),
   );
+}
 
-  return {
-    ...article,
-    author: findAuthor(html),
-    publishedAt,
-    updatedAt,
-    excerpt: findDescription(html),
-    imageUrl: findImage(html),
-    originalContent,
-  };
+function isPromotionalCandidate(title: string): boolean {
+  const normalized = title.toLowerCase();
+
+  const strongPromotionalPatterns = [
+    /\bfinal \d+ hours?\b/,
+    /\b\d+ hours? (left|to)\b/,
+    /\b\d+ days? left to\b/,
+    /\blast chance\b/,
+    /\bregister now\b/,
+    /\bregistration (is )?open\b/,
+    /\btickets?\b/,
+    /\bexhibit(ing|or|ors)?\b/,
+    /\bsponsor(ing|ed|ship)?\b/,
+    /\bapply now\b/,
+    /\bapplications? (are )?open\b/,
+    /\bcall for speakers\b/,
+    /\bbook (a )?table\b/,
+    /\bbooth\b/,
+    /\bexpo hall\b/,
+    /\bside event\b/,
+    /\bконференц/,
+    /\bвебинар/,
+    /\bрегистрац/,
+    /\bбилет(ы|ов)?\b/,
+    /\bвыстав/,
+    /\bэкспонент/,
+    /\bспонсор/,
+    /\bподать заявку\b/,
+    /\bзаявки? (открыт|принима)/,
+    /\bдедлайн\b/,
+    /\bпоследн\w* (час|дн)/,
+    /\bостал\w* (час|дн)/,
+    /\bзабронировать\b/,
+    /\bстенд\b/,
+    /\bэкспозал\b/,
+  ];
+
+  if (strongPromotionalPatterns.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+
+  // Generic event/conference wording is not enough by itself.
+  // It becomes promotional only when combined with an explicit call to action.
+  const genericEventPatterns = [
+    /\bconference\b/,
+    /\bconference(s)?\b/,
+    /\bevent(s)?\b/,
+    /\bмероприяти/,
+    /\bконференци/,
+  ];
+
+  const callToActionPatterns = [
+    /\bregister\b/,
+    /\bregistration\b/,
+    /\bticket/,
+    /\battend\b/,
+    /\bjoin us\b/,
+    /\bsign up\b/,
+    /\bapply\b/,
+    /\bзапиш/,
+    /\bзарегистр/,
+    /\bпосет/,
+    /\bучаств/,
+  ];
+
+  return (
+    genericEventPatterns.some((pattern) => pattern.test(normalized)) &&
+    callToActionPatterns.some((pattern) => pattern.test(normalized))
+  );
+}
+
+function hasAiSignal(title: string, description = ""): boolean {
+  const normalizedTitle = title.toLowerCase();
+  const normalizedText = `${title} ${description}`.toLowerCase();
+
+  const titlePatterns = [
+    /\bartificial intelligence\b/,
+    /\bai\b/,
+    /\bai[- ]powered\b/,
+    /\bai[- ]generated\b/,
+    /\bai[- ]driven\b/,
+    /\bai[- ]agent(s)?\b/,
+    /\bagentic\b/,
+    /\bautonomous agent(s)?\b/,
+    /\bllm(s)?\b/,
+    /\blarge language model(s)?\b/,
+    /\bfoundation model(s)?\b/,
+    /\b(?:new|frontier|reasoning|multimodal) model(s)?\b/,
+    /\bmodel(s)?\s+(?:release|launch|update|training|evaluation)\b/,
+    /\bmultimodal\b/,
+    /\bmachine learning\b/,
+    /\bdeep learning\b/,
+    /\bneural network(s)?\b/,
+    /\bcomputer vision\b/,
+    /\breinforcement learning\b/,
+    /\bmodel(s)?\b/,
+    /\brobot(s|ics)?\b/,
+    /\bhumanoid(s)?\b/,
+    /\balignment\b/,
+    /\bjailbreak(s|ed)?\b/,
+    /\bprompt injection\b/,
+    /\bsynthetic (data|media|content)\b/,
+    /\bгенеративн/,
+    /\bискусственн.*интеллект/,
+    /\bмашинн.*обучен/,
+    /\bнейросет/,
+    /\bмультимодальн/,
+    /\bробот(ы|а|ов|ам|ами|ах)?\b/,
+    /\bавтономн.*(агент|систем|робот|ai|ии)\b/,
+    /\bclaude\b/,
+    /\bgemini\b/,
+    /\bgpt(?:-\d+(?:\.\d+)?)?\b/,
+    /\bopenai\b/,
+    /\banthropic\b/,
+    /\bdeepmind\b/,
+    /\bmistral\b/,
+    /\bhugging face\b/,
+    /\bmeta ai\b/,
+    /\bmicrosoft ai\b/,
+  ];
+
+  if (titlePatterns.some((pattern) => pattern.test(normalizedTitle))) {
+    return true;
+  }
+
+  const textPatterns = [
+    /\bartificial intelligence\b/,
+    /\bai\b/,
+    /\bmachine learning\b/,
+    /\blarge language model\b/,
+    /\bfoundation model\b/,
+    /\bmultimodal\b/,
+    /\bllm\b/,
+    /\bai agent\b/,
+    /\brobotics\b/,
+    /\bcomputer vision\b/,
+    /\balignment\b/,
+    /\bprompt injection\b/,
+    /\bгенеративн/,
+    /\bискусственн.*интеллект/,
+    /\bнейросет/,
+    /\bмультимодальн/,
+    /\bclaude\b/,
+    /\bgemini\b/,
+    /\bgpt\b/,
+    /\bopenai\b/,
+    /\banthropic\b/,
+    /\bdeepmind\b/,
+  ];
+
+  let matches = 0;
+
+  for (const pattern of textPatterns) {
+    if (pattern.test(normalizedText)) {
+      matches++;
+    }
+  }
+
+  return matches >= 2;
+}
+
+function isAiFocusedSource(sourceSlug: string): boolean {
+  return [
+    "google-ai",
+    "techcrunch-ai",
+    "the-verge-ai",
+    "wired-ai",
+    "ars-technica-ai",
+    "the-decoder",
+  ].includes(sourceSlug);
+}
+
+function normalizeForMatch(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^a-zа-я0-9]+/gi, " ")
+    .replace(/\\s+/g, " ")
+    .trim();
+}
+
+function isClearlyAdjacentNonAiContent(title: string): boolean {
+  const normalizedTitle = normalizeForMatch(title);
+
+  const patterns = [
+    /\bdevfest\b/,
+    /\bastronaut\b/,
+    /\bspace\b.*\bdiscovery\b/,
+    /\bfootball\b/,
+    /\bnext big race\b/,
+    /\bhome decor\b/,
+    /\b70-year love story\b/,
+  ];
+
+  return patterns.some((pattern) => pattern.test(normalizedTitle));
+}
+
+function isRelevantCandidate(
+  title: string,
+  description = "",
+  sourceSlug?: string,
+): boolean {
+  if (isInfrastructureCandidate(title)) {
+    return false;
+  }
+
+  if (isPromotionalCandidate(title)) {
+    return false;
+  }
+
+  if (isClearlyAdjacentNonAiContent(title)) {
+    return false;
+  }
+
+  // Specialized AI feeds are editorially relevant by default. They can
+  // contain adjacent stories, so only a small set of clearly unrelated
+  // headlines is excluded here. Relevance is then refined by the topic
+  // classifier using the article text.
+  if (sourceSlug && isAiFocusedSource(sourceSlug)) {
+    return true;
+  }
+
+  return hasAiSignal(title, description);
 }
 
 function isFresh(
@@ -315,6 +382,520 @@ function isFresh(
 
   return publishedDate >= cutoff;
 }
+
+async function collectSource(
+  source: SourceConfig,
+): Promise<Candidate[]> {
+  console.log("");
+  console.log(`--- SOURCE: ${source.name} ---`);
+  console.log(`RSS: ${source.url}`);
+
+  const xml = await fetchFeed(source.url);
+
+  const { load } = await import("cheerio");
+  const $ = load(xml, { xmlMode: true });
+
+  const candidates: Candidate[] = [];
+  const seen = new Set<string>();
+
+  $("item, entry").each((_, element) => {
+    const title = cleanXmlText(
+      $(element).find("title").first().text(),
+    );
+
+    if (title.length < 10) {
+      return;
+    }
+
+    const linkElement = $(element).find("link").first();
+
+    let rawUrl = linkElement.attr("href") ?? null;
+
+    if (!rawUrl) {
+      rawUrl = linkElement.text().trim() || null;
+    }
+
+    if (!rawUrl) {
+      rawUrl =
+        $(element).find("guid").first().text().trim() || null;
+    }
+
+    if (!rawUrl) {
+      return;
+    }
+
+    const url = normalizeUrl(rawUrl, source.url);
+
+    if (seen.has(url)) {
+      return;
+    }
+
+    const publishedAt =
+      $(element).find("pubDate").first().text().trim() ||
+      $(element).find("published").first().text().trim() ||
+      $(element).find("updated").first().text().trim() ||
+      $(element).find("dc\\:date").first().text().trim() ||
+      null;
+
+    const description = cleanXmlText(
+      $(element).find("description").first().text() ||
+        $(element).find("summary").first().text() ||
+        $(element).find("content\\:encoded").first().text(),
+    );
+
+    if (!isRelevantCandidate(title, description, source.slug)) {
+      const reason = isInfrastructureCandidate(title)
+        ? "infrastructure"
+        : isPromotionalCandidate(title)
+          ? "promotional"
+          : "relevance";
+
+      console.log(
+        `RSS candidate excluded by ${reason} rule: ${title}`,
+      );
+      return;
+    }
+
+    seen.add(url);
+
+    candidates.push({
+      sourceSlug: source.slug,
+      title,
+      url,
+      publishedAt,
+      description,
+    });
+  });
+
+  console.log(`RSS entries found: ${candidates.length}`);
+
+  return candidates;
+}
+
+const TOPIC_DEFINITIONS = [
+  {
+    slug: "ai-tech",
+    name: "AI и технологии",
+    description:
+      "Новые модели, AI-агенты, продукты, инструменты, робототехника и практическое применение ИИ.",
+    sortOrder: 1,
+    patterns: [
+      /\bai[- ]agent(s)?\b/,
+      /\bagentic\b/,
+      /\bautonomous agent(s)?\b/,
+      /\bllm(s)?\b/,
+      /\blarge language model(s)?\b/,
+      /\bfoundation model(s)?\b/,
+      /\bmultimodal\b/,
+      /\bnew model(s)?\b/,
+      /\bmodel(s)?\s+(?:release|launch|update|training)\b/,
+      /\bchatbot(s)?\b/,
+      /\brobot(s|ics)?\b/,
+      /\bhumanoid(s)?\b/,
+      /\bcomputer vision\b/,
+      /\bgenerative ai\b/,
+      /\bgenai\b/,
+      /\bsynthetic (?:media|content|data)\b/,
+      /\bгенеративн/,
+      /\bискусственн.*интеллект/,
+      /\bнейросет/,
+      /\bмультимодальн/,
+      /\bробот(ы|а|ов|ам|ами|ах)?\b/,
+      /\bавтономн.*(агент|систем|робот|ии)/,
+      /\bclaude\b/,
+      /\bgemini\b/,
+      /\bgpt(?:-\d+(?:\.\d+)?)?\b/,
+      /\bopenai\b/,
+      /\banthropic\b/,
+      /\bdeepmind\b/,
+      /\bmistral\b/,
+      /\bhugging face\b/,
+    ],
+  },
+  {
+    slug: "business-innovation",
+    name: "Бизнес и инновации",
+    description:
+      "Компании, стартапы, инвестиции, сделки, рынок, продукты как бизнес и внедрение ИИ.",
+    sortOrder: 2,
+    patterns: [
+      /\bstartup(s)?\b/,
+      /\bfounder(s)?\b/,
+      /\braises?\b/,
+      /\braised\b/,
+      /\bfunding\b/,
+      /\binvestment(s)?\b/,
+      /\binvestor(s)?\b/,
+      /\bventure capital\b/,
+      /\bvaluation\b/,
+      /\bacqui(red|sition)\b/,
+      /\bmerger\b/,
+      /\bpartnership\b/,
+      /\bdeal(s)?\b/,
+      /\brevenue\b/,
+      /\bmarket\b/,
+      /\bcustomer(s)?\b/,
+      /\benterprise\b/,
+      /\bbusiness\b/,
+      /\bcompany\b/,
+      /\bcompanies\b/,
+      /\bcommercial\b/,
+      /\bcorporate\b/,
+      /\bпродаж/,
+      /\bвыручк/,
+      /\bстартап/,
+      /\bинвестици/,
+      /\bфинансирован/,
+      /\bкомпани/,
+      /\bбизнес/,
+      /\bрынок/,
+      /\bпартнерств/,
+      /\bсделк/,
+    ],
+  },
+  {
+    slug: "research",
+    name: "Исследования",
+    description:
+      "Научные исследования, эксперименты, новые методы, оценки моделей и научные результаты.",
+    sortOrder: 3,
+    patterns: [
+      /\bresearcher(s)?\b/,
+      /\bresearch\b/,
+      /\bstudy\b/,
+      /\bstudies\b/,
+      /\bpaper\b/,
+      /\bscientific\b/,
+      /\bexperiment(s)?\b/,
+      /\bfindings?\b/,
+      /\bmethod(s|ology)?\b/,
+      /\bbenchmark(s)?\b/,
+      /\bevaluation\b/,
+      /\bdataset(s)?\b/,
+      /\barxiv\b/,
+      /\bpeer[- ]reviewed\b/,
+      /\bscientist(s)?\b/,
+      /\bmathematician(s)?\b/,
+      /\bconjecture\b/,
+      /\bисследован/,
+      /\bуч[её]н/,
+      /\bнаучн/,
+      /\bэксперимент/,
+      /\bметод/,
+      /\bвыборк/,
+      /\bрезультат.*исслед/,
+      /\bтестирован/,
+      /\bбенчмарк/,
+    ],
+  },
+  {
+    slug: "other",
+    name: "Другое",
+    description:
+      "Релевантные материалы об ИИ и технологиях, которые не относятся однозначно к основным рубрикам.",
+    sortOrder: 4,
+    patterns: [
+      /\belection(s)?\b/,
+      /\bsenate\b/,
+      /\bcongress\b/,
+      /\bpolitic(s|al)?\b/,
+      /\bcampaign\b/,
+      /\bgovernment\b/,
+      /\bregulation\b/,
+      /\bregulat(ory|ion)\b/,
+      /\blaw(s)?\b/,
+      /\blegislation\b/,
+      /\bpolicy\b/,
+      /\brules?\b/,
+      /\bcopyright\b/,
+      /\bcourt\b/,
+      /\bantitrust\b/,
+      /\bsafety\b/,
+      /\bexistential risk\b/,
+      /\bsociet(y|al)\b/,
+      /\bculture\b/,
+      /\bjobs?\b/,
+      /\blabor\b/,
+      /\bworkforce\b/,
+      /\bвыбор/,
+      /\bсенат/,
+      /\bконгресс/,
+      /\bполит/,
+      /\bправительств/,
+      /\bрегулирован/,
+      /\bзакон/,
+      /\bзаконодательств/,
+      /\bправил/,
+      /\bавторск/,
+      /\bсуд/,
+      /\bантимонополь/,
+      /\bбезопасност/,
+      /\bобществен/,
+      /\bкультур/,
+      /\bработ/,
+      /\bзанятост/,
+    ],
+  },
+] as const;
+
+type TopicDefinition = (typeof TOPIC_DEFINITIONS)[number];
+
+function countTopicMatches(text: string, patterns: readonly RegExp[]): number {
+  let matches = 0;
+
+  for (const pattern of patterns) {
+    if (pattern.test(text)) {
+      matches++;
+    }
+  }
+
+  return matches;
+}
+
+function classifyArticleTopic(
+  title: string,
+  content: string,
+  sourceSlug: string,
+): { topic: TopicDefinition; confidence: number } {
+  const normalizedTitle = normalizeForMatch(title);
+  const normalizedContent = normalizeForMatch(content);
+  const normalizedText = `${normalizedTitle} ${normalizedContent.slice(0, 8000)}`;
+
+  const count = (patterns: readonly RegExp[], value: string) =>
+    patterns.reduce(
+      (total, pattern) => total + (pattern.test(value) ? 1 : 0),
+      0,
+    );
+
+  /*
+   * Editorial classification priority:
+   * 1. Concrete commercial/product stories -> Business & innovation.
+   * 2. Explicit model-misalignment incidents -> Other.
+   * 3. Research/scientific results -> Research.
+   * 4. Regulation, law, society, military, safety and public debate -> Other.
+   * 5. AI products, models, agents and applications -> AI & technology.
+   */
+
+  const researchTitlePatterns = [
+    /\bresearchers?\b/, /\bresearch\b/, /\bstud(y|ies)\b/,
+    /\bpaper\b/, /\bscientists?\b/, /\bmathematicians?\b/,
+    /\bexperiment(s)?\b/, /\bfindings?\b/, /\bbenchmark(s)?\b/,
+    /\bevaluation\b/, /\bconjecture\b/, /\barxiv\b/,
+    /\bpeer[- ]reviewed\b/, /\bscientific\b/, /\bnew method(s)?\b/,
+    /\bmethodology\b/, /\bматематик/, /\bисследован/, /\bуч[её]н/,
+    /\bнаучн/, /\bэксперимент/, /\bбенчмарк/, /\bтестирован/,
+    /\bгипотез/, /\bтеорем/,
+  ];
+
+  const businessTitlePatterns = [
+    /\bstartup(s)?\b/, /\bfounder(s)?\b/, /\braises?\b/, /\braised\b/,
+    /\bfunding\b/, /\binvestment(s)?\b/, /\binvestor(s)?\b/,
+    /\bventure capital\b/, /\bvaluation\b/, /\bacqui(red|sition)\b/,
+    /\bmerger\b/, /\bpartnership\b/, /\bpartner(?:s|ed|ing)?\b/,
+    /\bdeal(s)?\b/, /\brevenue\b/, /\bfinancial consumer\b/,
+    /\blegal market\b/, /\bcommercial market\b/,
+    /\bmonetiz/, /\bpricing\b/, /\bcost-cutting\b/,
+    /\bai\s*&\s*economy\b/,
+    /\bjoin(?:s|ed|ing)?\b.*\b(?:team|company|firm|organization)\b/,
+    /\b(?:team|company|firm|organization)\b.*\bjoin(?:s|ed|ing)?\b/,
+    /\blaunch(?:es|ed|ing)?\b.*\b(?:product|service|platform)\b.*\b(?:market|customer|business|enterprise|commercial)\b/,
+    /\b(?:product|service|platform)\b.*\blaunch(?:es|ed|ing)?\b.*\b(?:market|customer|business|enterprise|commercial)\b/,
+    /\bnew .*product\b.*\b(?:market|customer|business|enterprise|commercial)\b/,
+    /\bnew .*service\b.*\b(?:market|customer|business|enterprise|commercial)\b/,
+    /\bпродаж/, /\bвыручк/, /\bстартап/, /\bинвестици/,
+    /\bфинансирован/, /\bпартнерств/, /\bсделк/, /\bрынок/,
+    /\bкоммерчес/,
+  ];
+
+  const otherTitlePatterns = [
+    /\bai safety\b/, /\bsafety debate\b/,
+    /\bai superintelligence slowdown\b/, /\bai slowdown\b/,
+    /\bmisalign(?:ed|ment)\b/, /\brogue ai\b/,
+    /\bharmful prompts?\b/, /\badversarial\b/, /\bwatermark(?:ing)?\b/,
+    /\bregulat(?:e|es|ed|ion|ing)\b/, /\bgovernment(?:s)?\b/,
+    /\bpolicy\b/, /\blaw\b/, /\blegal\b/, /\bcourt\b/, /\bantitrust\b/,
+    /\bnuclear\b/, /\bbioweapon(?:s)?\b/, /\bmilitary\b/,
+    /\bbattlefield\b/, /\bdrone(?:s)?\b/, /\bjobs?\b/, /\blabor\b/,
+    /\bworkforce\b/, /\bcopyright\b/, /\bfair use\b/,
+    /\bsociet(?:y|al)\b/, /\bexistential risk\b/, /\bai doom\b/,
+    /\bapocalypse\b/, /\bsenate\b/, /\belection\b/,
+    /\bpolitic(?:s|al)\b/, /\bking of england\b/,
+    /\bpublic (?:opinion|debate|reaction)\b/,
+    /\bair traffic\b/, /\bfaa\b/,
+    /\bagi debate\b/, /\bwiden the agi debate\b/,
+    /\bchains? of thought\b/, /\btransparency\b/,
+    /\bclone teachers?\b/, /\bdigitally clone teachers?\b/,
+    /\bai threats?\b/, /\bthreats? are real\b/,
+    /\bai industry\b.*\bresearch\b.*\bpaused?\b/,
+    /\bfollowed its own research\b/,
+  ];
+
+  const explicitMisalignmentPatterns = [
+    /\bmodels?\b.*\b(?:hide|hiding|conceal|concealing)\b.*\b(?:behavior|behaviour)\b/,
+    /\b(?:hide|hiding|conceal|concealing)\b.*\b(?:bad behavior|bad behaviour)\b/,
+    /\b(?:leaving|left)\b.*\bnotes?\b.*\bsuccessor/,
+    /\bprompt injection\b/, /\bjailbreak(?:ed|ing|s)?\b/,
+    /\bmisalign(?:ed|ment)\b/, /\brogue ai\b/,
+    /\btried to jailbreak\b/, /\bjailbreak itself\b/,
+  ];
+
+  const researchMatches = count(researchTitlePatterns, normalizedTitle);
+  const businessMatches = count(businessTitlePatterns, normalizedTitle);
+  const otherMatches = count(otherTitlePatterns, normalizedTitle);
+  const misalignmentMatches = count(
+    explicitMisalignmentPatterns,
+    normalizedTitle,
+  );
+
+  // Explicit model-behavior incidents are Other.
+  if (misalignmentMatches > 0) {
+    return {
+      topic: TOPIC_DEFINITIONS[3],
+      confidence: 0.95,
+    };
+  }
+
+  // Concrete commercial/product stories take priority over generic legal or
+  // safety wording, but only when the headline clearly describes a business
+  // action, launch, market move or company activity.
+  if (businessMatches > 0) {
+    return {
+      topic: TOPIC_DEFINITIONS[1],
+      confidence: businessMatches >= 2 ? 0.95 : 0.9,
+    };
+  }
+
+  // Research-led material remains Research even when the title also mentions
+  // existential risk or another consequence.
+  if (researchMatches > 0) {
+    return {
+      topic: TOPIC_DEFINITIONS[2],
+      confidence: researchMatches >= 2 ? 0.95 : 0.9,
+    };
+  }
+
+  if (otherMatches > 0) {
+    return {
+      topic: TOPIC_DEFINITIONS[3],
+      confidence: otherMatches >= 2 ? 0.95 : 0.9,
+    };
+  }
+
+  const businessBodyPatterns = [
+    /\bpartnership\b/, /\bcommercial\b/, /\benterprise\b/,
+    /\bcustomer(?:s)?\b/, /\bpricing\b/, /\brevenue\b/,
+    /\bfundrais(?:e|es|ed|ing)\b/, /\binvest(?:s|ed|ment|ing)?\b/,
+    /\bacqui(?:re|res|red|sition)\b/,
+  ];
+
+  if (count(businessBodyPatterns, normalizedText) >= 2) {
+    return {
+      topic: TOPIC_DEFINITIONS[1],
+      confidence: 0.8,
+    };
+  }
+
+  if (isAiFocusedSource(sourceSlug)) {
+    return {
+      topic: TOPIC_DEFINITIONS[0],
+      confidence: 0.7,
+    };
+  }
+
+  return {
+    topic: TOPIC_DEFINITIONS[3],
+    confidence: 0.7,
+  };
+}
+
+async function ensureTopics(): Promise<void> {
+  for (const definition of TOPIC_DEFINITIONS) {
+    await prisma.topic.upsert({
+      where: {
+        slug: definition.slug,
+      },
+      update: {
+        name: definition.name,
+        description: definition.description,
+        isActive: true,
+        sortOrder: definition.sortOrder,
+      },
+      create: {
+        name: definition.name,
+        slug: definition.slug,
+        description: definition.description,
+        isActive: true,
+        sortOrder: definition.sortOrder,
+      },
+    });
+  }
+}
+
+async function assignPrimaryTopic(
+  articleId: string,
+  title: string,
+  content: string,
+  sourceSlug: string,
+): Promise<void> {
+  const classification = classifyArticleTopic(title, content, sourceSlug);
+
+  const topic = await prisma.topic.findUnique({
+    where: {
+      slug: classification.topic.slug,
+    },
+  });
+
+  if (!topic) {
+    throw new Error(
+      `Topic not found after initialization: ${classification.topic.slug}`,
+    );
+  }
+
+  const currentPrimary = await prisma.articleTopic.findFirst({
+    where: {
+      articleId,
+      isPrimary: true,
+    },
+    include: {
+      topic: true,
+    },
+  });
+
+  if (currentPrimary?.topic.slug === topic.slug) {
+    await prisma.articleTopic.update({
+      where: {
+        articleId_topicId: {
+          articleId,
+          topicId: topic.id,
+        },
+      },
+      data: {
+        confidence: classification.confidence,
+        isPrimary: true,
+      },
+    });
+  } else {
+    await prisma.articleTopic.deleteMany({
+      where: {
+        articleId,
+      },
+    });
+
+    await prisma.articleTopic.create({
+      data: {
+        articleId,
+        topicId: topic.id,
+        confidence: classification.confidence,
+        isPrimary: true,
+      },
+    });
+  }
+
+  console.log(
+    `Topic assigned: ${classification.topic.name} (${classification.confidence})`,
+  );
+}
+
 
 async function getTodayDigest() {
   const issueDate = getMoscowDate();
@@ -343,14 +924,11 @@ async function getTodayDigest() {
 async function getNextDigestPosition(
   digestId: string,
 ): Promise<number> {
-  const lastArticle = await prisma.digestArticle.findFirst({
-    where: {
-      digestId,
-    },
-    orderBy: {
-      position: "desc",
-    },
-  });
+  const lastArticle =
+    await prisma.digestArticle.findFirst({
+      where: { digestId },
+      orderBy: { position: "desc" },
+    });
 
   return (lastArticle?.position ?? 0) + 1;
 }
@@ -359,24 +937,25 @@ async function addArticleToDigest(
   digestId: string,
   articleId: string,
 ): Promise<boolean> {
-  const existing = await prisma.digestArticle.findUnique({
-    where: {
-      digestId_articleId: {
-        digestId,
-        articleId,
+  const existing =
+    await prisma.digestArticle.findUnique({
+      where: {
+        digestId_articleId: {
+          digestId,
+          articleId,
+        },
       },
-    },
-  });
+    });
 
   if (existing) {
     console.log(
       `Article already belongs to today's digest: ${articleId}`,
     );
-
     return false;
   }
 
-  const position = await getNextDigestPosition(digestId);
+  const position =
+    await getNextDigestPosition(digestId);
 
   await prisma.digestArticle.create({
     data: {
@@ -393,23 +972,93 @@ async function addArticleToDigest(
   return true;
 }
 
-/**
- * Переводит принятую статью через DeepL.
- *
- * Перевод выполняется только после того, как Gemini
- * признал материал релевантным.
- */
+async function getOrCreateSource(
+  sourceConfig: SourceConfig,
+) {
+  const source = await prisma.source.upsert({
+    where: {
+      slug: sourceConfig.slug,
+    },
+    update: {
+      name: sourceConfig.name,
+      url: sourceConfig.url,
+      language: sourceConfig.language,
+      country:
+        sourceConfig.language === "ru" ? "RU" : null,
+      sourceType: sourceConfig.sourceType,
+      isActive: true,
+    },
+    create: {
+      slug: sourceConfig.slug,
+      name: sourceConfig.name,
+      url: sourceConfig.url,
+      language: sourceConfig.language,
+      country:
+        sourceConfig.language === "ru" ? "RU" : null,
+      sourceType: sourceConfig.sourceType,
+      isActive: true,
+    },
+  });
+
+  const sourceFeed = await prisma.sourceFeed.upsert({
+    where: {
+      sourceId_url: {
+        sourceId: source.id,
+        url: sourceConfig.url,
+      },
+    },
+    update: {
+      feedType: sourceConfig.feedType,
+      isActive: true,
+    },
+    create: {
+      sourceId: source.id,
+      feedType: sourceConfig.feedType,
+      url: sourceConfig.url,
+      isActive: true,
+    },
+  });
+
+  return {
+    source,
+    sourceFeed,
+  };
+}
+
+async function saveAcceptedArticleSource(
+  articleId: string,
+  sourceId: string,
+  sourceFeedId: string,
+  sourceUrl: string,
+): Promise<void> {
+  const existing =
+    await prisma.articleSource.findFirst({
+      where: {
+        articleId,
+        sourceId,
+        sourceUrl,
+      },
+    });
+
+  if (existing) {
+    return;
+  }
+
+  await prisma.articleSource.create({
+    data: {
+      articleId,
+      sourceId,
+      sourceFeedId,
+      sourceUrl,
+    },
+  });
+}
+
 async function translateAcceptedArticle(
   articleId: string,
   title: string,
-  originalContent: string | null,
+  originalContent: string,
 ) {
-  if (!originalContent) {
-    throw new Error(
-      "Cannot translate article: original content is empty.",
-    );
-  }
-
   console.log("");
   console.log("--- DEEPL TRANSLATION ---");
 
@@ -419,14 +1068,14 @@ async function translateAcceptedArticle(
   );
 
   const updatedArticle = await prisma.article.update({
-    where: {
-      id: articleId,
-    },
+    where: { id: articleId },
     data: {
       translatedTitle: translation.translatedTitle,
       translatedContent: translation.translatedContent,
-      translationLanguage: translation.translationLanguage,
-      translationProvider: translation.translationProvider,
+      translationLanguage:
+        translation.translationLanguage,
+      translationProvider:
+        translation.translationProvider,
       translatedAt: translation.translatedAt,
     },
   });
@@ -434,7 +1083,6 @@ async function translateAcceptedArticle(
   console.log(
     `Russian title saved: ${translation.translatedTitle.length} characters`,
   );
-
   console.log(
     `Russian content saved: ${translation.translatedContent.length} characters`,
   );
@@ -442,8 +1090,339 @@ async function translateAcceptedArticle(
   return updatedArticle;
 }
 
+async function createCollectionItem(
+  runId: string,
+  sourceFeedId: string,
+  articleId: string | null,
+  status: string,
+  error?: string,
+) {
+  return prisma.collectionItem.create({
+    data: {
+      collectionRunId: runId,
+      sourceFeedId,
+      articleId,
+      status,
+      error,
+    },
+  });
+}
+
+async function processCandidate(params: {
+  candidate: Candidate;
+  sourceConfig: SourceConfig;
+  source: Awaited<
+    ReturnType<typeof getOrCreateSource>
+  >["source"];
+  sourceFeed: Awaited<
+    ReturnType<typeof getOrCreateSource>
+  >["sourceFeed"];
+  digest: Awaited<ReturnType<typeof getTodayDigest>>;
+  runId: string;
+  cutoff: Date;
+}) {
+  const {
+    candidate,
+    sourceConfig,
+    source,
+    sourceFeed,
+    digest,
+    runId,
+    cutoff,
+  } = params;
+
+  console.log("");
+  console.log("--- CANDIDATE ---");
+  console.log(`Source: ${source.name}`);
+  console.log(`Title: ${candidate.title}`);
+  console.log(`URL: ${candidate.url}`);
+  console.log(
+    `RSS published: ${candidate.publishedAt ?? "not found"}`,
+  );
+
+  if (!isFresh(candidate.publishedAt, cutoff)) {
+    console.log(
+      "Article skipped: RSS publication date is missing or older than 24 hours.",
+    );
+
+    await createCollectionItem(
+      runId,
+      sourceFeed.id,
+      null,
+      "NOT_RELEVANT",
+      "Article is outside the 24-hour collection window or has no RSS publication date.",
+    );
+
+    return {
+      fresh: false,
+      newArticle: false,
+      duplicate: false,
+      relevant: false,
+      error: false,
+    };
+  }
+
+  let details: ExtractedArticle;
+
+  try {
+    details = await extractArticle(candidate.url);
+  } catch (error) {
+    console.error(
+      `Article extraction failed: ${candidate.url}`,
+    );
+    console.error(error);
+
+    await createCollectionItem(
+      runId,
+      sourceFeed.id,
+      null,
+      "ERROR",
+      error instanceof Error
+        ? error.message
+        : String(error),
+    );
+
+    return {
+      fresh: false,
+      newArticle: false,
+      duplicate: false,
+      relevant: false,
+      error: true,
+    };
+  }
+
+  console.log(
+    `Extracted article text: ${details.text.length} characters`,
+  );
+  console.log(
+    `Published in article: ${details.publishedAt ?? "not found"}`,
+  );
+
+  const canonicalUrl = normalizeUrl(
+    candidate.url,
+    sourceConfig.url,
+  );
+
+  const existingArticle =
+    await prisma.article.findUnique({
+      where: { canonicalUrl },
+    });
+
+  if (existingArticle) {
+    console.log(
+      `Existing article: ${existingArticle.id}`,
+    );
+
+    if (
+      !isRelevantCandidate(
+        existingArticle.title,
+        existingArticle.originalContent.slice(0, 12000),
+        sourceConfig.slug,
+      )
+    ) {
+      console.log(
+        "Existing article skipped: current editorial relevance rules do not accept it.",
+      );
+
+      await createCollectionItem(
+        runId,
+        sourceFeed.id,
+        existingArticle.id,
+        "NOT_RELEVANT",
+        "Existing article failed the current deterministic editorial relevance filter.",
+      );
+
+      return {
+        fresh: true,
+        newArticle: false,
+        duplicate: true,
+        relevant: false,
+        error: false,
+      };
+    }
+
+    await saveAcceptedArticleSource(
+      existingArticle.id,
+      source.id,
+      sourceFeed.id,
+      candidate.url,
+    );
+
+    await assignPrimaryTopic(
+      existingArticle.id,
+      existingArticle.title,
+      existingArticle.originalContent.slice(0, 12000),
+      source.slug,
+    );
+
+    const added = await addArticleToDigest(
+      digest.id,
+      existingArticle.id,
+    );
+
+    await createCollectionItem(
+      runId,
+      sourceFeed.id,
+      existingArticle.id,
+      "RELEVANT",
+    );
+
+    return {
+      fresh: true,
+      newArticle: false,
+      duplicate: true,
+      relevant: added,
+      error: false,
+    };
+  }
+
+  const contentHash = crypto
+    .createHash("sha256")
+    .update(canonicalUrl)
+    .digest("hex");
+
+  const contentType =
+    await prisma.contentType.findUnique({
+      where: { code: "NEWS" },
+    });
+
+  if (!contentType) {
+    throw new Error(
+      "Content type NEWS not found.",
+    );
+  }
+
+  const articleRecord = await prisma.article.create({
+    data: {
+      title: details.title || candidate.title,
+      originalTitle:
+        details.title || candidate.title,
+      url: candidate.url,
+      canonicalUrl,
+      author: details.author,
+      publishedAt: details.publishedAt
+        ? new Date(details.publishedAt)
+        : candidate.publishedAt
+          ? new Date(candidate.publishedAt)
+          : null,
+      language: sourceConfig.language,
+      excerpt: null,
+      imageUrl: null,
+      contentHash,
+      originalContent: details.text,
+      status: "NEW",
+      contentTypeId: contentType.id,
+    },
+  });
+
+  console.log(
+    `Article created: ${articleRecord.id}`,
+  );
+
+  await saveAcceptedArticleSource(
+    articleRecord.id,
+    source.id,
+    sourceFeed.id,
+    candidate.url,
+  );
+
+  let publishedArticle = articleRecord;
+
+  if (sourceConfig.language !== "ru") {
+    try {
+      publishedArticle =
+        await translateAcceptedArticle(
+          articleRecord.id,
+          articleRecord.title,
+          articleRecord.originalContent,
+        );
+    } catch (error) {
+      console.error(
+        `DeepL translation failed for article: ${articleRecord.id}`,
+      );
+      console.error(error);
+
+      await prisma.article.delete({
+        where: { id: articleRecord.id },
+      });
+
+      await createCollectionItem(
+        runId,
+        sourceFeed.id,
+        null,
+        "ERROR",
+        error instanceof Error
+          ? error.message
+          : String(error),
+      );
+
+      return {
+        fresh: true,
+        newArticle: true,
+        duplicate: false,
+        relevant: false,
+        error: true,
+      };
+    }
+  } else {
+    publishedArticle =
+      await prisma.article.update({
+        where: { id: articleRecord.id },
+        data: {
+          translatedTitle: articleRecord.title,
+          translatedContent:
+            articleRecord.originalContent,
+          translationLanguage: "ru",
+          translationProvider: null,
+          translatedAt: null,
+        },
+      });
+
+    console.log(
+      "Russian source detected: DeepL translation skipped.",
+    );
+  }
+
+  await assignPrimaryTopic(
+    publishedArticle.id,
+    publishedArticle.title,
+    publishedArticle.originalContent.slice(0, 12000),
+    source.slug,
+  );
+
+  publishedArticle =
+    await prisma.article.update({
+      where: { id: publishedArticle.id },
+      data: { status: "PUBLISHED" },
+    });
+
+  const added = await addArticleToDigest(
+    digest.id,
+    publishedArticle.id,
+  );
+
+  await createCollectionItem(
+    runId,
+    sourceFeed.id,
+    publishedArticle.id,
+    "RELEVANT",
+  );
+
+  console.log(
+    `Article accepted: ${publishedArticle.id}`,
+  );
+
+  return {
+    fresh: true,
+    newArticle: true,
+    duplicate: false,
+    relevant: added,
+    error: false,
+  };
+}
+
 async function main() {
-  console.log("Starting collection run...");
+  console.log("Starting RSS collection run...");
 
   const run = await prisma.collectionRun.create({
     data: {
@@ -459,6 +1438,7 @@ async function main() {
 
   console.log(`Collection run: ${run.id}`);
 
+  let sourcesChecked = 0;
   let articlesFound = 0;
   let articlesNew = 0;
   let articlesDuplicate = 0;
@@ -466,44 +1446,7 @@ async function main() {
   let errorCount = 0;
 
   try {
-    const source = await prisma.source.findUnique({
-      where: {
-        slug: SOURCE_SLUG,
-      },
-    });
-
-    if (!source) {
-      throw new Error(
-        `Source "${SOURCE_SLUG}" not found.`,
-      );
-    }
-
-    const sourceFeed = await prisma.sourceFeed.findFirst({
-      where: {
-        sourceId: source.id,
-        url: BASE_URL,
-        isActive: true,
-      },
-    });
-
-    if (!sourceFeed) {
-      throw new Error(
-        `Active WEF feed not found: ${BASE_URL}`,
-      );
-    }
-
-    const contentType =
-      await prisma.contentType.findUnique({
-        where: {
-          code: "NEWS",
-        },
-      });
-
-    if (!contentType) {
-      throw new Error(
-        "Content type NEWS not found.",
-      );
-    }
+    await ensureTopics();
 
     const digest = await getTodayDigest();
 
@@ -519,540 +1462,96 @@ async function main() {
 
     console.log("");
     console.log(
-      `Looking for articles published since: ${cutoff.toISOString()}`,
+      `Looking for RSS articles published since: ${cutoff.toISOString()}`,
     );
 
-    const allArticles = new Map<
-      string,
-      Article
-    >();
-
-    for (
-      let page = 1;
-      page <= MAX_PAGES;
-      page++
-    ) {
-      const articles = await fetchPage(page);
-
-      console.log(
-        `Found stories on page ${page}: ${articles.length}`,
-      );
-
-      for (const article of articles) {
-        allArticles.set(article.url, article);
-      }
-    }
-
-    console.log(
-      `Unique stories found: ${allArticles.size}`,
-    );
-
-    let freshArticles = 0;
-
-    for (const article of allArticles.values()) {
+    for (const sourceConfig of SOURCES) {
       try {
-        const details =
-          await fetchArticleDetails(article);
+        const { source, sourceFeed } =
+          await getOrCreateSource(sourceConfig);
 
-        if (
-          !isFresh(
-            details.publishedAt,
+        sourcesChecked++;
+
+        const candidates =
+          await collectSource(sourceConfig);
+
+        for (const candidate of candidates) {
+          const result = await processCandidate({
+            candidate,
+            sourceConfig,
+            source,
+            sourceFeed,
+            digest,
+            runId: run.id,
             cutoff,
-          )
-        ) {
-          console.log(
-            `Reached old article: ${details.title} (${details.publishedAt ?? "no date"})`,
-          );
-
-          break;
-        }
-
-        freshArticles++;
-
-        console.log("");
-        console.log("--- FRESH ARTICLE ---");
-        console.log(`Title: ${details.title}`);
-        console.log(
-          `Author: ${details.author ?? "not found"}`,
-        );
-        console.log(
-          `Published: ${details.publishedAt}`,
-        );
-        console.log(`URL: ${details.url}`);
-
-        const canonicalUrl = details.url;
-
-        const existingArticle =
-          await prisma.article.findUnique({
-            where: {
-              canonicalUrl,
-            },
           });
 
-        /**
-         * ---------------------------------------------------------
-         * СУЩЕСТВУЮЩАЯ СТАТЬЯ
-         * ---------------------------------------------------------
-         */
-        if (existingArticle) {
-          console.log(
-            `Existing article: ${existingArticle.id}`,
-          );
-
-          articlesDuplicate++;
-
-          let articleRecord = existingArticle;
-
-          /**
-           * Если полного текста раньше не было,
-           * дозаписываем его.
-           */
-          if (
-            !existingArticle.originalContent &&
-            details.originalContent
-          ) {
-            articleRecord =
-              await prisma.article.update({
-                where: {
-                  id: existingArticle.id,
-                },
-                data: {
-                  originalContent:
-                    details.originalContent,
-                },
-              });
-
-            console.log(
-              `Original content saved for existing article: ${articleRecord.id}`,
-            );
+          if (result.fresh) {
+            articlesFound++;
           }
 
-          /**
-           * Берём последний AI-анализ.
-           */
-          const latestAnalysis =
-            await prisma.articleAnalysis.findFirst({
-              where: {
-                articleId: articleRecord.id,
-              },
-              orderBy: {
-                analyzedAt: "desc",
-              },
-            });
-
-          let isRelevant = false;
-
-          if (latestAnalysis) {
-            isRelevant =
-              latestAnalysis.relevance === "HIGH" ||
-              latestAnalysis.relevance === "MEDIUM";
-
-            console.log(
-              `Existing AI analysis: ${latestAnalysis.relevance} (${latestAnalysis.relevanceScore})`,
-            );
-          } else {
-            console.log("");
-            console.log(
-              "--- AI ANALYSIS FOR EXISTING ARTICLE ---",
-            );
-
-            const analysis =
-              await analyzeArticle(
-                articleRecord.id,
-              );
-
-            isRelevant =
-              analysis.relevance === "HIGH" ||
-              analysis.relevance === "MEDIUM";
-
-            console.log(
-              `AI analysis completed: ${analysis.relevance} (${analysis.relevanceScore})`,
-            );
+          if (result.newArticle) {
+            articlesNew++;
           }
 
-          if (isRelevant) {
-            /**
-             * Для нерусских материалов переводим статью,
-             * если русский текст ещё не сохранён.
-             *
-             * WEF сейчас является англоязычным источником.
-             */
-            if (
-              articleRecord.language?.toLowerCase() !== "ru" &&
-              !articleRecord.translatedContent
-            ) {
-              try {
-                articleRecord =
-                  await translateAcceptedArticle(
-                    articleRecord.id,
-                    articleRecord.title,
-                    articleRecord.originalContent ??
-                      details.originalContent,
-                  );
-              } catch (error) {
-                errorCount++;
-
-                console.error(
-                  `DeepL translation failed for existing article: ${articleRecord.id}`,
-                );
-                console.error(error);
-
-                await prisma.collectionItem.create({
-                  data: {
-                    collectionRunId: run.id,
-                    sourceFeedId: sourceFeed.id,
-                    articleId: articleRecord.id,
-                    status: "ERROR",
-                    error:
-                      error instanceof Error
-                        ? error.message
-                        : String(error),
-                  },
-                });
-
-                continue;
-              }
-            }
-
-            const added =
-              await addArticleToDigest(
-                digest.id,
-                articleRecord.id,
-              );
-
-            if (added) {
-              articlesRelevant++;
-            }
+          if (result.duplicate) {
+            articlesDuplicate++;
           }
 
-          await prisma.collectionItem.create({
-            data: {
-              collectionRunId: run.id,
-              sourceFeedId: sourceFeed.id,
-              articleId: articleRecord.id,
-              status: isRelevant
-                ? "RELEVANT"
-                : "NOT_RELEVANT",
-            },
-          });
+          if (result.relevant) {
+            articlesRelevant++;
+          }
 
-          console.log(
-            `CollectionItem created: ${
-              isRelevant
-                ? "RELEVANT"
-                : "NOT_RELEVANT"
-            }`,
-          );
-
-          continue;
+          if (result.error) {
+            errorCount++;
+          }
         }
 
-        /**
-         * ---------------------------------------------------------
-         * НОВАЯ СТАТЬЯ
-         * ---------------------------------------------------------
-         *
-         * Сначала создаём техническую запись.
-         * Gemini определяет релевантность.
-         * Если статья нерелевантна — удаляем её.
-         * Если релевантна — переводим и публикуем.
-         */
-        const contentHash = crypto
-          .createHash("sha256")
-          .update(canonicalUrl)
-          .digest("hex");
+        await prisma.sourceFeed.update({
+          where: { id: sourceFeed.id },
+          data: {
+            lastCheckedAt: new Date(),
+            lastSuccessAt: new Date(),
+            lastError: null,
+          },
+        });
+      } catch (error) {
+        errorCount++;
 
-        let articleRecord =
-          await prisma.article.create({
-            data: {
-              title: details.title,
-              originalTitle: details.title,
-              url: details.url,
-              canonicalUrl,
-              author: details.author,
-              publishedAt:
-                details.publishedAt
-                  ? new Date(
-                      details.publishedAt,
-                    )
-                  : null,
-              language:
-                source.language ?? "en",
-              excerpt: details.excerpt,
-              imageUrl: details.imageUrl,
-              contentHash,
-              originalContent:
-                details.originalContent,
-              status: "NEW",
-              contentTypeId:
-                contentType.id,
-            },
-          });
-
-        console.log(
-          `Temporary article created for AI filtering: ${articleRecord.id}`,
+        console.error(
+          `Failed to process source: ${sourceConfig.name}`,
         );
-
-        if (details.originalContent) {
-          console.log(
-            `Original content saved: ${details.originalContent.length} characters`,
-          );
-        } else {
-          console.log(
-            "Original content was not extracted.",
-          );
-        }
-
-        articlesNew++;
-
-        console.log("");
-        console.log("--- AI ANALYSIS ---");
-
-        let analysis;
+        console.error(error);
 
         try {
-          analysis = await analyzeArticle(
-            articleRecord.id,
-          );
-        } catch (error) {
-          errorCount++;
+          const { sourceFeed } =
+            await getOrCreateSource(sourceConfig);
 
-          console.error(
-            `AI analysis failed for article: ${articleRecord.id}`,
-          );
-          console.error(error);
-
-          await prisma.article.delete({
-            where: {
-              id: articleRecord.id,
-            },
-          });
-
-          console.log(
-            "Article removed because AI analysis failed.",
-          );
-
-          await prisma.collectionItem.create({
+          await prisma.sourceFeed.update({
+            where: { id: sourceFeed.id },
             data: {
-              collectionRunId: run.id,
-              sourceFeedId: sourceFeed.id,
-              articleId: null,
-              status: "AI_ERROR",
-              error:
+              lastCheckedAt: new Date(),
+              lastError:
                 error instanceof Error
                   ? error.message
                   : String(error),
             },
           });
-
-          continue;
-        }
-
-        const isRelevant =
-          analysis.relevance === "HIGH" ||
-          analysis.relevance === "MEDIUM";
-
-        console.log(
-          `AI analysis completed: ${analysis.relevance} (${analysis.relevanceScore})`,
-        );
-
-        /**
-         * ---------------------------------------------------------
-         * НЕРЕЛЕВАНТНАЯ СТАТЬЯ
-         * ---------------------------------------------------------
-         */
-        if (!isRelevant) {
-          console.log(
-            `Article is not relevant: ${analysis.relevance}`,
+        } catch (sourceError) {
+          console.error(
+            "Failed to update source feed error state.",
           );
-
-          await prisma.articleAnalysis.deleteMany({
-            where: {
-              articleId: articleRecord.id,
-            },
-          });
-
-          await prisma.article.delete({
-            where: {
-              id: articleRecord.id,
-            },
-          });
-
-          console.log(
-            "Irrelevant article removed.",
-          );
-
-          await prisma.collectionItem.create({
-            data: {
-              collectionRunId: run.id,
-              sourceFeedId: sourceFeed.id,
-              articleId: null,
-              status: "NOT_RELEVANT",
-            },
-          });
-
-          continue;
+          console.error(sourceError);
         }
-
-        /**
-         * ---------------------------------------------------------
-         * РЕЛЕВАНТНАЯ СТАТЬЯ
-         * ---------------------------------------------------------
-         *
-         * Только теперь запускаем DeepL.
-         */
-        if (
-          articleRecord.language?.toLowerCase() !== "ru"
-        ) {
-          try {
-            articleRecord =
-              await translateAcceptedArticle(
-                articleRecord.id,
-                articleRecord.title,
-                articleRecord.originalContent,
-              );
-          } catch (error) {
-            errorCount++;
-
-            console.error(
-              `DeepL translation failed for article: ${articleRecord.id}`,
-            );
-            console.error(error);
-
-            /**
-             * Не публикуем статью без русского текста.
-             */
-            await prisma.articleAnalysis.deleteMany({
-              where: {
-                articleId: articleRecord.id,
-              },
-            });
-
-            await prisma.article.delete({
-              where: {
-                id: articleRecord.id,
-              },
-            });
-
-            console.log(
-              "Article removed because translation failed.",
-            );
-
-            await prisma.collectionItem.create({
-              data: {
-                collectionRunId: run.id,
-                sourceFeedId: sourceFeed.id,
-                articleId: null,
-                status: "ERROR",
-                error:
-                  error instanceof Error
-                    ? error.message
-                    : String(error),
-              },
-            });
-
-            continue;
-          }
-        }
-
-        articleRecord =
-          await prisma.article.update({
-            where: {
-              id: articleRecord.id,
-            },
-            data: {
-              status: "PUBLISHED",
-            },
-          });
-
-        console.log(
-          `Article accepted: ${articleRecord.id}`,
-        );
-
-        /**
-         * Источник статьи.
-         */
-        const existingSource =
-          await prisma.articleSource.findFirst({
-            where: {
-              articleId: articleRecord.id,
-              sourceId: source.id,
-              sourceUrl: details.url,
-            },
-          });
-
-        if (!existingSource) {
-          await prisma.articleSource.create({
-            data: {
-              articleId: articleRecord.id,
-              sourceId: source.id,
-              sourceFeedId: sourceFeed.id,
-              sourceUrl: details.url,
-            },
-          });
-
-          console.log(
-            "ArticleSource created.",
-          );
-        }
-
-        /**
-         * Статья попадает в сегодняшний выпуск.
-         */
-        const added =
-          await addArticleToDigest(
-            digest.id,
-            articleRecord.id,
-          );
-
-        if (added) {
-          articlesRelevant++;
-        }
-
-        await prisma.collectionItem.create({
-          data: {
-            collectionRunId: run.id,
-            sourceFeedId: sourceFeed.id,
-            articleId: articleRecord.id,
-            status: "RELEVANT",
-          },
-        });
-
-        console.log(
-          "CollectionItem created: RELEVANT",
-        );
-      } catch (error) {
-        errorCount++;
-
-        console.error(
-          `Failed to process article: ${article.url}`,
-        );
-        console.error(error);
-
-        await prisma.collectionItem.create({
-          data: {
-            collectionRunId: run.id,
-            sourceFeedId: sourceFeed.id,
-            status: "ERROR",
-            error:
-              error instanceof Error
-                ? error.message
-                : String(error),
-          },
-        });
       }
     }
 
-    articlesFound = freshArticles;
-
     await prisma.collectionRun.update({
-      where: {
-        id: run.id,
-      },
+      where: { id: run.id },
       data: {
         finishedAt: new Date(),
         status: "SUCCESS",
-        sourcesChecked: 1,
+        sourcesChecked,
         articlesFound,
         articlesNew,
         articlesDuplicate,
@@ -1062,40 +1561,26 @@ async function main() {
     });
 
     console.log("");
-    console.log(
-      "==============================",
-    );
-    console.log(
-      "COLLECTION RUN COMPLETED",
-    );
-    console.log(
-      "==============================",
-    );
+    console.log("==============================");
+    console.log("RSS COLLECTION RUN COMPLETED");
+    console.log("==============================");
     console.log(`Run ID: ${run.id}`);
     console.log(`Digest ID: ${digest.id}`);
-    console.log(`Sources checked: 1`);
+    console.log(`Sources checked: ${sourcesChecked}`);
+    console.log(`Fresh articles: ${articlesFound}`);
+    console.log(`Articles new: ${articlesNew}`);
+    console.log(`Articles duplicate: ${articlesDuplicate}`);
     console.log(
-      `Fresh articles: ${freshArticles}`,
-    );
-    console.log(
-      `Articles new: ${articlesNew}`,
-    );
-    console.log(
-      `Articles duplicate: ${articlesDuplicate}`,
-    );
-    console.log(
-      `Articles relevant and added to digest: ${articlesRelevant}`,
+      `Articles accepted and added to digest: ${articlesRelevant}`,
     );
     console.log(`Errors: ${errorCount}`);
   } catch (error) {
     await prisma.collectionRun.update({
-      where: {
-        id: run.id,
-      },
+      where: { id: run.id },
       data: {
         finishedAt: new Date(),
         status: "FAILED",
-        sourcesChecked: 1,
+        sourcesChecked,
         articlesFound,
         articlesNew,
         articlesDuplicate,

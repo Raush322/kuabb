@@ -2,32 +2,6 @@ import Link from "next/link";
 
 import { prisma } from "@learning-intelligence/database";
 
-function SearchIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-    >
-      <circle
-        cx="11"
-        cy="11"
-        r="6.5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      />
-      <path
-        d="m16 16 5 5"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
 function Arrow() {
   return (
     <svg
@@ -122,46 +96,36 @@ export default async function Home() {
       {/* HEADER */}
       <header className="relative z-20 border-b border-[#c99a4a]/25 bg-[#071016]/95">
         <div className="mx-auto max-w-[1450px] px-6 sm:px-8 lg:px-12">
-          <div className="flex min-h-[88px] items-center justify-between gap-8">
+          <div className="flex min-h-[110px] items-center">
             <Link href="/" className="shrink-0">
-              <div className="text-[28px] leading-none tracking-[-0.035em] text-[#e4bd72]">
-                Ак Барс Развитие
-              </div>
-
-              <div className="mt-2 text-[11px] uppercase tracking-[0.24em] text-[#b5ae9f]">
-                Журнал знаний и развития
-              </div>
-            </Link>
-
-            <div className="hidden flex-1 justify-end gap-5 md:flex">
-              <div className="flex h-10 w-[330px] items-center gap-3 rounded-md border border-[#75603b]/55 bg-[#050b0f] px-4 text-[#837c6e]">
-                <SearchIcon />
-
-                <span className="text-sm">
-                  Поиск по статьям, темам, источникам...
+              <div className="text-[34px] leading-none tracking-[-0.045em] text-[#e4bd72]">
+                <span className="text-[#f0e8d8]">Мир</span>
+                <span className="text-[#e4bd72]">AI</span>
+                <span className="ml-4 align-middle text-[24px] text-[#d4aa5d]">
+                  ✦
                 </span>
               </div>
 
-              <button className="flex items-center gap-2 px-3 text-sm text-[#d7cdbb] transition hover:text-[#e3bc70]">
-                Мой блокнот
-              </button>
-            </div>
+              <div className="mt-3 text-[11px] uppercase tracking-[0.32em] text-[#b5ae9f]">
+                Главное сегодня
+              </div>
+            </Link>
           </div>
 
           <nav className="flex overflow-x-auto border-t border-[#c99a4a]/15">
             {[
               ["Главная", "/"],
-              ["Технологии", "#"],
+              ["AI и технологии", "#"],
+              ["Бизнес и инновации", "#"],
               ["Люди и навыки", "#"],
-              ["Бизнес", "#"],
-              ["Банкинг", "#"],
               ["Исследования", "#"],
+              ["Регулирование", "#"],
               ["Архив", "/archive"],
             ].map(([item, href], index) => (
               <Link
                 key={item}
                 href={href}
-                className={`shrink-0 border-b-2 px-5 py-4 text-sm transition-colors ${
+                className={`shrink-0 border-b-2 px-5 py-5 text-sm transition-colors ${
                   index === 0
                     ? "border-[#d2a453] bg-[#c99a4a]/10 text-[#e3bc70]"
                     : "border-transparent text-[#c1baad] hover:text-[#e3bc70]"
@@ -226,12 +190,12 @@ export default async function Home() {
               ) : (
                 <>
                   <h1 className="max-w-[720px] text-5xl leading-[1.03] tracking-[-0.045em] text-[#f2e9d6]">
-                    Ак Барс Развитие
+                    МирAI
                   </h1>
 
                   <p className="mt-6 max-w-[650px] text-base leading-7 text-[#bdb5a6]">
-                    Сегодняшний выпуск пока не содержит
-                    материалов.
+                    Главное о том, что нового появляется в мире
+                    искусственного интеллекта и технологий.
                   </p>
                 </>
               )}
@@ -258,7 +222,7 @@ export default async function Home() {
                 <div className="my-3 border-t border-[#73572e]/40" />
 
                 <div className="font-serif text-sm italic leading-5">
-                  Знания открывают новые возможности
+                  Новое появляется каждый день
                 </div>
               </div>
             </div>
@@ -427,7 +391,7 @@ export default async function Home() {
             <div>
               <div className="mb-6 flex items-center gap-4">
                 <h2 className="section-heading text-3xl">
-                  Тематические подборки
+                  Темы
                 </h2>
 
                 <div className="h-px flex-1 bg-[#8b6b38]/40" />
@@ -435,15 +399,15 @@ export default async function Home() {
 
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  ["ИИ в обучении", "AI и технологии"],
-                  ["Лидерство", "Leadership"],
-                  ["Банкинг", "Financial sector"],
-                  ["Будущее работы", "Future of Work"],
+                  ["Модели и агенты", "Новые модели, AI-агенты и методы"],
+                  ["Продукты и инструменты", "Сервисы, функции и применения"],
+                  ["Бизнес и инновации", "Компании, рынки и новые сценарии"],
+                  ["Исследования", "Научные результаты и эксперименты"],
                 ].map(([title, subtitle]) => (
                   <a
                     key={title}
                     href="#"
-                    className="group relative min-h-[105px] overflow-hidden rounded-sm border border-[#765a32]/50 bg-[#101a20] p-5 transition hover:border-[#c99a4a]"
+                    className="group relative min-h-[125px] overflow-hidden rounded-sm border border-[#765a32]/50 bg-[#101a20] p-5 transition hover:border-[#c99a4a]"
                   >
                     <div className="absolute right-4 top-2 text-5xl text-[#c99a4a]/10 transition group-hover:text-[#c99a4a]/20">
                       ✦
@@ -454,7 +418,7 @@ export default async function Home() {
                         {title}
                       </div>
 
-                      <div className="mt-2 text-xs text-[#a19a8d]">
+                      <div className="mt-2 text-xs leading-5 text-[#a19a8d]">
                         {subtitle}
                       </div>
                     </div>
@@ -476,8 +440,8 @@ export default async function Home() {
               </div>
 
               <blockquote className="mt-3 text-2xl leading-9 text-[#302417]">
-                Прошлые выпуски остаются доступными для
-                чтения.
+                Прошлые выпуски остаются доступными
+                для чтения.
               </blockquote>
             </div>
 
@@ -497,21 +461,27 @@ export default async function Home() {
         <div className="mx-auto flex max-w-[1450px] flex-col gap-5 px-6 py-8 text-sm text-[#817c71] sm:px-8 md:flex-row md:items-center md:justify-between lg:px-12">
           <div>
             <div className="text-[#d0a55a]">
-              Ак Барс Развитие
+              МирAI
             </div>
 
             <div className="mt-1 text-xs">
-              Внутренний журнал о развитии, технологиях и
-              будущем работы
+              Журнал о новых событиях, идеях и технологиях
+              искусственного интеллекта
             </div>
           </div>
 
           <div className="flex gap-6 text-xs">
-            <a href="#" className="hover:text-[#d0a55a]">
+            <a
+              href="#"
+              className="hover:text-[#d0a55a]"
+            >
               О проекте
             </a>
 
-            <a href="#" className="hover:text-[#d0a55a]">
+            <a
+              href="#"
+              className="hover:text-[#d0a55a]"
+            >
               Предложить материал
             </a>
           </div>

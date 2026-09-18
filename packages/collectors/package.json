@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "collect:wef": "tsx src/wef.ts",
-    "collect": "tsx src/wef-db.ts"
+    "collect": "tsx src/wef-db.ts",
+    "cleanup": "tsx src/cleanup-digests.ts"
   },
   "dependencies": {
     "@google/genai": "^2.22.0",
