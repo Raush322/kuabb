@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { prisma } from "@learning-intelligence/database";
 
+export const dynamic = "force-dynamic";
+
 function formatDate(date: Date) {
   return new Intl.DateTimeFormat("ru-RU", {
     day: "numeric",
@@ -42,7 +44,7 @@ export default async function ArchivePage() {
               href="/"
               className="font-serif text-2xl font-semibold tracking-wide text-[#d7b56d]"
             >
-              Ак Барс Развитие
+              МирAI
             </Link>
 
             <nav className="flex flex-wrap gap-5 text-sm text-[#bdb7a8]">
