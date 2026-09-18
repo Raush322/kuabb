@@ -36,12 +36,6 @@ export default async function ArticlePage({
     },
     include: {
       contentType: true,
-      analyses: {
-        orderBy: {
-          analyzedAt: "desc",
-        },
-        take: 1,
-      },
       articleSources: {
         include: {
           source: true,
@@ -61,9 +55,19 @@ export default async function ArticlePage({
     notFound();
   }
 
-  const analysis = article.analyses[0];
   const source = article.articleSources[0]?.source;
   const tags = getTags(article.articleTags);
+
+  const isRussian =
+    article.language?.toLowerCase() === "ru";
+
+  const articleTitle = isRussian
+    ? article.title
+    : article.translatedTitle;
+
+  const articleContent = isRussian
+    ? article.originalContent
+    : article.translatedContent;
 
   return (
     <main className="min-h-screen bg-[#071016] text-[#f1ead9]">
@@ -97,9 +101,15 @@ export default async function ArticlePage({
           )}
         </div>
 
-        <h1 className="max-w-[950px] text-4xl leading-[1.08] tracking-[-0.03em] text-[#e4bd72] sm:text-5xl lg:text-6xl">
-          {article.translatedTitle || article.title}
-        </h1>
+        {articleTitle ? (
+          <h1 className="max-w-[950px] text-4xl leading-[1.08] tracking-[-0.03em] text-[#e4bd72] sm:text-5xl lg:text-6xl">
+            {articleTitle}
+          </h1>
+        ) : (
+          <h1 className="max-w-[950px] text-4xl leading-[1.08] tracking-[-0.03em] text-[#e4bd72] sm:text-5xl lg:text-6xl">
+            {article.title}
+          </h1>
+        )}
 
         {article.author && (
           <div className="mt-6 text-sm text-[#b8b2a5]">
@@ -120,7 +130,7 @@ export default async function ArticlePage({
           </div>
         )}
 
-        {article.excerpt && (
+        {article.excerpt && isRussian && (
           <div className="mt-10 border-l-2 border-[#c99a4a] pl-6 text-xl leading-relaxed text-[#d6cfbf]">
             {article.excerpt}
           </div>
@@ -129,84 +139,39 @@ export default async function ArticlePage({
         <div className="my-12 h-px bg-[#c99a4a]/25" />
 
         <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_300px]">
-          <div>
+          <div className="lg:col-span-2">
             <div className="mb-4 text-xs uppercase tracking-[0.2em] text-[#c99a4a]">
               Материал
             </div>
 
-            {article.translatedContent ? (
+            {articleContent ? (
               <div className="whitespace-pre-line text-[18px] leading-[1.8] text-[#e7dfcf]">
-                {article.translatedContent}
-              </div>
-            ) : article.originalContent ? (
-              <div>
-                <div className="mb-5 border border-[#75603b]/40 bg-[#111d24] px-4 py-3 text-sm text-[#b8b2a5]">
-                  Перевод пока не выполнен. Ниже отображается оригинальный
-                  текст материала.
-                </div>
-
-                <div className="whitespace-pre-line text-[18px] leading-[1.8] text-[#e7dfcf]">
-                  {article.originalContent}
-                </div>
+                {articleContent}
               </div>
             ) : (
               <div className="border border-[#75603b]/40 bg-[#111d24] p-6 text-[#b8b2a5]">
-                Текст материала пока не извлечён.
+                Русская версия материала пока недоступна.
               </div>
             )}
           </div>
-
-          <aside className="lg:pt-8">
-            {analysis && (
-              <div className="border border-[#75603b]/40 bg-[#111d24] p-6">
-                <div className="mb-6 text-xs uppercase tracking-[0.18em] text-[#c99a4a]">
-                  Почему это важно
-                </div>
-
-                {analysis.whyItMatters && (
-                  <div className="mb-6">
-                    <div className="mb-2 text-sm text-[#b8b2a5]">
-                      Что стоит обратить внимание
-                    </div>
-
-                    <div className="text-[15px] leading-relaxed text-[#e7dfcf]">
-                      {analysis.whyItMatters}
-                    </div>
-                  </div>
-                )}
-
-                {analysis.learningImplications && (
-                  <div>
-                    <div className="mb-2 text-sm text-[#b8b2a5]">
-                      Для обучения
-                    </div>
-
-                    <div className="text-[15px] leading-relaxed text-[#e7dfcf]">
-                      {analysis.learningImplications}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <a
-              href={article.url}
-              target="_blank"
-              rel="noreferrer"
-              className="mt-5 block border border-[#c99a4a]/40 px-5 py-4 text-center text-sm text-[#e4bd72] transition hover:bg-[#c99a4a]/10"
-            >
-              Открыть оригинал →
-            </a>
-          </aside>
         </div>
 
-        <div className="mt-16 border-t border-[#c99a4a]/20 pt-6">
+        <div className="mt-16 flex flex-wrap items-center justify-between gap-4 border-t border-[#c99a4a]/20 pt-6">
           <Link
             href="/"
             className="text-sm text-[#b8b2a5] transition hover:text-[#e4bd72]"
           >
             ← Вернуться к материалам
           </Link>
+
+          <a
+            href={article.url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-sm text-[#e4bd72] transition hover:text-[#c99a4a]"
+          >
+            Открыть оригинал →
+          </a>
         </div>
       </article>
     </main>
