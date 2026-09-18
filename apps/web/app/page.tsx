@@ -1,3 +1,5 @@
+export const dynamic = "force-dynamic";
+
 import Link from "next/link";
 
 import { prisma } from "@learning-intelligence/database";
@@ -67,18 +69,9 @@ export default async function Home({ searchParams }: HomeProps) {
   const params = await searchParams;
   const activeTopic = params.topic;
 
-  const issueDate = new Date(
-    new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Europe/Moscow",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date()) + "T00:00:00.000Z",
-  );
-
-  const digest = await prisma.digest.findUnique({
-    where: {
-      periodStart: issueDate,
+  const digest = await prisma.digest.findFirst({
+    orderBy: {
+      periodStart: "desc",
     },
     include: {
       articles: {
