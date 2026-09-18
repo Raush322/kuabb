@@ -4,14 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "collect:wef": "tsx src/wef.ts"
+    "collect:wef": "tsx src/wef.ts",
+    "collect": "tsx src/wef-db.ts"
   },
   "dependencies": {
     "@google/genai": "^2.22.0",
     "@learning-intelligence/database": "^0.1.0",
     "cheerio": "^1.2.0",
     "dotenv": "^16.6.1",
-    "openai": "^7.16.0",
     "tsx": "^4.20.5"
   }
 }

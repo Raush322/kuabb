@@ -14,10 +14,13 @@ function normalizeText(text: string): string {
     .trim();
 }
 
-function extractTextWithSpaces($: cheerio.CheerioAPI, element: cheerio.Element): string {
+function extractTextWithSpaces(
+  $: cheerio.CheerioAPI,
+  element: unknown,
+): string {
   const parts: string[] = [];
 
-  function walk(node: cheerio.Element | cheerio.TextElement) {
+  function walk(node: any) {
     if (node.type === "text") {
       const value = $(node).text();
 
@@ -94,8 +97,6 @@ export async function extractWefArticle(
     )
     .remove();
 
-    const paragraphs = contentContainer.find("p");
-
   const blocks: string[] = [];
 
   contentContainer
@@ -109,8 +110,12 @@ export async function extractWefArticle(
 
       if (
         block === "License and Republishing" ||
-        block.startsWith("World Economic Forum articles may be republished") ||
-        block.startsWith("The views expressed in this article are those of the author")
+        block.startsWith(
+          "World Economic Forum articles may be republished",
+        ) ||
+        block.startsWith(
+          "The views expressed in this article are those of the author",
+        )
       ) {
         return;
       }

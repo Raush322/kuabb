@@ -4,6 +4,7 @@ import { prisma } from "@learning-intelligence/database";
 import * as cheerio from "cheerio";
 
 import { analyzeArticle } from "./analyze-article.js";
+import { translateArticle } from "./translate-article.js";
 
 const BASE_URL = "https://www.weforum.org/sitemap/articles/";
 const SOURCE_SLUG = "world-economic-forum";
@@ -12,8 +13,6 @@ const MAX_PAGES = 1;
 const LOOKBACK_HOURS = 24;
 
 // Выпуск формируется по московскому времени.
-// Для проекта на российскую аудиторию это фиксирует границу дня независимо
-// от часового пояса машины, на которой работает collector.
 const ISSUE_TIME_ZONE = "Europe/Moscow";
 
 type Article = {
@@ -134,8 +133,8 @@ async function fetchPage(page: number): Promise<Article[]> {
   });
 
   return Array.from(articles.entries()).map(([url, title]) => ({
-    title,
     url,
+    title,
   }));
 }
 
@@ -394,6 +393,55 @@ async function addArticleToDigest(
   return true;
 }
 
+/**
+ * Переводит принятую статью через DeepL.
+ *
+ * Перевод выполняется только после того, как Gemini
+ * признал материал релевантным.
+ */
+async function translateAcceptedArticle(
+  articleId: string,
+  title: string,
+  originalContent: string | null,
+) {
+  if (!originalContent) {
+    throw new Error(
+      "Cannot translate article: original content is empty.",
+    );
+  }
+
+  console.log("");
+  console.log("--- DEEPL TRANSLATION ---");
+
+  const translation = await translateArticle(
+    title,
+    originalContent,
+  );
+
+  const updatedArticle = await prisma.article.update({
+    where: {
+      id: articleId,
+    },
+    data: {
+      translatedTitle: translation.translatedTitle,
+      translatedContent: translation.translatedContent,
+      translationLanguage: translation.translationLanguage,
+      translationProvider: translation.translationProvider,
+      translatedAt: translation.translatedAt,
+    },
+  });
+
+  console.log(
+    `Russian title saved: ${translation.translatedTitle.length} characters`,
+  );
+
+  console.log(
+    `Russian content saved: ${translation.translatedContent.length} characters`,
+  );
+
+  return updatedArticle;
+}
+
 async function main() {
   console.log("Starting collection run...");
 
@@ -545,9 +593,6 @@ async function main() {
          * ---------------------------------------------------------
          * СУЩЕСТВУЮЩАЯ СТАТЬЯ
          * ---------------------------------------------------------
-         *
-         * Она уже прошла предыдущий сбор.
-         * Не создаём её повторно.
          */
         if (existingArticle) {
           console.log(
@@ -595,12 +640,6 @@ async function main() {
               },
             });
 
-          /**
-           * Если статья уже признана релевантной —
-           * просто добавляем её в сегодняшний выпуск.
-           *
-           * Если анализа нет, запускаем Gemini.
-           */
           let isRelevant = false;
 
           if (latestAnalysis) {
@@ -632,6 +671,49 @@ async function main() {
           }
 
           if (isRelevant) {
+            /**
+             * Для нерусских материалов переводим статью,
+             * если русский текст ещё не сохранён.
+             *
+             * WEF сейчас является англоязычным источником.
+             */
+            if (
+              articleRecord.language?.toLowerCase() !== "ru" &&
+              !articleRecord.translatedContent
+            ) {
+              try {
+                articleRecord =
+                  await translateAcceptedArticle(
+                    articleRecord.id,
+                    articleRecord.title,
+                    articleRecord.originalContent ??
+                      details.originalContent,
+                  );
+              } catch (error) {
+                errorCount++;
+
+                console.error(
+                  `DeepL translation failed for existing article: ${articleRecord.id}`,
+                );
+                console.error(error);
+
+                await prisma.collectionItem.create({
+                  data: {
+                    collectionRunId: run.id,
+                    sourceFeedId: sourceFeed.id,
+                    articleId: articleRecord.id,
+                    status: "ERROR",
+                    error:
+                      error instanceof Error
+                        ? error.message
+                        : String(error),
+                  },
+                });
+
+                continue;
+              }
+            }
+
             const added =
               await addArticleToDigest(
                 digest.id,
@@ -670,17 +752,10 @@ async function main() {
          * НОВАЯ СТАТЬЯ
          * ---------------------------------------------------------
          *
-         * Здесь важный момент:
-         *
-         * Gemini должен решить, нужна ли статья журналу,
-         * ДО того как мы окончательно оставим её в базе.
-         *
-         * Поскольку текущая analyzeArticle() работает
-         * с articleId, сначала создаём техническую запись,
-         * запускаем анализ, а нерелевантную сразу удаляем.
-         *
-         * Для пользователя такая статья не становится частью
-         * articles и никогда не появляется в журнале.
+         * Сначала создаём техническую запись.
+         * Gemini определяет релевантность.
+         * Если статья нерелевантна — удаляем её.
+         * Если релевантна — переводим и публикуем.
          */
         const contentHash = crypto
           .createHash("sha256")
@@ -747,13 +822,6 @@ async function main() {
           );
           console.error(error);
 
-          /**
-           * Если Gemini не смог определить релевантность,
-           * материал не публикуем.
-           *
-           * Удаляем техническую запись, чтобы ошибка AI
-           * не превращалась в опубликованную статью.
-           */
           await prisma.article.delete({
             where: {
               id: articleRecord.id,
@@ -798,10 +866,6 @@ async function main() {
             `Article is not relevant: ${analysis.relevance}`,
           );
 
-          /**
-           * Сначала удаляем AI-анализ.
-           * Затем саму статью.
-           */
           await prisma.articleAnalysis.deleteMany({
             where: {
               articleId: articleRecord.id,
@@ -835,8 +899,62 @@ async function main() {
          * РЕЛЕВАНТНАЯ СТАТЬЯ
          * ---------------------------------------------------------
          *
-         * Теперь она окончательно считается материалом журнала.
+         * Только теперь запускаем DeepL.
          */
+        if (
+          articleRecord.language?.toLowerCase() !== "ru"
+        ) {
+          try {
+            articleRecord =
+              await translateAcceptedArticle(
+                articleRecord.id,
+                articleRecord.title,
+                articleRecord.originalContent,
+              );
+          } catch (error) {
+            errorCount++;
+
+            console.error(
+              `DeepL translation failed for article: ${articleRecord.id}`,
+            );
+            console.error(error);
+
+            /**
+             * Не публикуем статью без русского текста.
+             */
+            await prisma.articleAnalysis.deleteMany({
+              where: {
+                articleId: articleRecord.id,
+              },
+            });
+
+            await prisma.article.delete({
+              where: {
+                id: articleRecord.id,
+              },
+            });
+
+            console.log(
+              "Article removed because translation failed.",
+            );
+
+            await prisma.collectionItem.create({
+              data: {
+                collectionRunId: run.id,
+                sourceFeedId: sourceFeed.id,
+                articleId: null,
+                status: "ERROR",
+                error:
+                  error instanceof Error
+                    ? error.message
+                    : String(error),
+              },
+            });
+
+            continue;
+          }
+        }
+
         articleRecord =
           await prisma.article.update({
             where: {
