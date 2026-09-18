@@ -51,18 +51,30 @@ enum ContentTypeCode {
 }
 
 model Article {
-  id            String   @id @default(uuid()) @db.Uuid
-  title         String   @db.Text
-  originalTitle String?  @map("original_title") @db.Text
-  url           String   @db.Text
-  canonicalUrl  String   @unique @map("canonical_url") @db.Text
-  author        String?  @db.Text
-  publishedAt   DateTime? @map("published_at") @db.Timestamptz(6)
-  language      String   @db.VarChar(12)
-  excerpt       String?  @db.Text
-  imageUrl      String?  @map("image_url") @db.Text
-  contentHash   String   @map("content_hash") @db.Char(64)
-  status        String   @default("NEW") @db.VarChar(24)
+  id              String   @id @default(uuid()) @db.Uuid
+  title           String   @db.Text
+  originalTitle   String?  @map("original_title") @db.Text
+  url             String   @db.Text
+  canonicalUrl    String   @unique @map("canonical_url") @db.Text
+  author          String?  @db.Text
+  publishedAt     DateTime? @map("published_at") @db.Timestamptz(6)
+  language        String   @db.VarChar(12)
+  excerpt         String?  @db.Text
+  imageUrl        String?  @map("image_url") @db.Text
+  contentHash     String   @map("content_hash") @db.Char(64)
+  status          String   @default("NEW") @db.VarChar(24)
+
+  // Полный оригинальный текст статьи.
+  // Хранится в базе, но пользователю не показывается.
+  originalContent String? @map("original_content") @db.Text
+
+  // Перевод статьи для публикации.
+  translatedTitle     String?   @map("translated_title") @db.Text
+  translatedContent   String?   @map("translated_content") @db.Text
+  translationLanguage String?   @map("translation_language") @db.VarChar(12)
+  translationProvider String?   @map("translation_provider") @db.VarChar(32)
+  translatedAt        DateTime? @map("translated_at") @db.Timestamptz(6)
+
   contentTypeId String   @map("content_type_id") @db.Uuid
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -136,11 +148,15 @@ model ArticleAnalysis {
   relevance            Relevance
   relevanceScore       Decimal   @map("relevance_score") @db.Decimal(5, 2)
   relevanceReason      String    @map("relevance_reason") @db.Text
+
+  // Внутренние поля анализа.
+  // Не выводятся пользователю на странице статьи.
   summary              String    @db.Text
   businessContext      String    @map("business_context") @db.Text
   learningImplications String    @map("learning_implications") @db.Text
   whyItMatters         String    @map("why_it_matters") @db.Text
   keySignals           Json      @map("key_signals") @db.JsonB
+
   aiModel              String    @map("ai_model") @db.VarChar(120)
   promptVersion        String    @map("prompt_version") @db.VarChar(64)
   analyzedAt           DateTime  @default(now()) @map("analyzed_at") @db.Timestamptz(6)
@@ -165,7 +181,7 @@ model Topic {
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   parent   Topic?        @relation("TopicHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
-  children Topic[]        @relation("TopicHierarchy")
+  children Topic[]       @relation("TopicHierarchy")
   articles ArticleTopic[]
 
   @@index([parentId, sortOrder])
@@ -213,7 +229,7 @@ model Source {
   language    String?    @db.VarChar(12)
   sourceType  SourceType @map("source_type")
   priority    Int        @default(0) @db.SmallInt
-  description String?    @db.Text
+  description String?   @db.Text
   isActive    Boolean    @default(true) @map("is_active")
   trustScore  Decimal?   @map("trust_score") @db.Decimal(4, 3)
   createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -265,13 +281,13 @@ model RelevanceRule {
 }
 
 model AiPrompt {
-  id        String   @id @default(uuid()) @db.Uuid
-  name      String   @db.VarChar(160)
-  purpose   String   @db.VarChar(100)
-  promptText String  @map("prompt_text") @db.Text
-  version   String   @db.VarChar(64)
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  id         String   @id @default(uuid()) @db.Uuid
+  name       String   @db.VarChar(160)
+  purpose    String   @db.VarChar(100)
+  promptText String   @map("prompt_text") @db.Text
+  version    String   @db.VarChar(64)
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@unique([name, version])
   @@map("ai_prompts")
@@ -349,13 +365,20 @@ model CollectionItem {
 model Digest {
   id          String   @id @default(uuid()) @db.Uuid
   title       String   @db.VarChar(300)
+
+  // Дата выпуска.
+  // Один день = один выпуск.
   periodStart DateTime @map("period_start") @db.Date
   periodEnd   DateTime @map("period_end") @db.Date
+
   summary     String?  @db.Text
   status      String   @db.VarChar(24)
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   articles DigestArticle[]
+
+  // Не допускаем два выпуска на одну дату.
+  @@unique([periodStart])
 
   @@index([status, periodStart(sort: Desc)])
   @@map("digests")
