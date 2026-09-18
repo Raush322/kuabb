@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { prisma } from "@learning-intelligence/database";
 
 function SearchIcon() {
@@ -67,41 +69,49 @@ function getTags(
 }
 
 export default async function Home() {
-  const articles = await prisma.article.findMany({
+  const issueDate = new Date(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Moscow",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date()) + "T00:00:00.000Z",
+  );
+
+  const digest = await prisma.digest.findUnique({
     where: {
-      status: "NEW",
+      periodStart: issueDate,
     },
     include: {
-      contentType: true,
-
-      analyses: {
+      articles: {
         orderBy: {
-          analyzedAt: "desc",
+          position: "asc",
         },
-        take: 1,
-      },
-
-      articleSources: {
         include: {
-          source: true,
+          article: {
+            include: {
+              contentType: true,
+              articleSources: {
+                include: {
+                  source: true,
+                },
+                take: 1,
+              },
+              articleTags: {
+                include: {
+                  tag: true,
+                },
+                take: 5,
+              },
+            },
+          },
         },
-        take: 1,
-      },
-
-      articleTags: {
-        include: {
-          tag: true,
-        },
-        take: 5,
       },
     },
-
-    orderBy: {
-      publishedAt: "desc",
-    },
-
-    take: 12,
   });
+
+  const articles =
+    digest?.articles.map((item) => item.article) ?? [];
 
   const heroArticle = articles[0];
   const latestArticles = articles.slice(1, 5);
@@ -113,15 +123,15 @@ export default async function Home() {
       <header className="relative z-20 border-b border-[#c99a4a]/25 bg-[#071016]/95">
         <div className="mx-auto max-w-[1450px] px-6 sm:px-8 lg:px-12">
           <div className="flex min-h-[88px] items-center justify-between gap-8">
-            <a href="/" className="shrink-0">
+            <Link href="/" className="shrink-0">
               <div className="text-[28px] leading-none tracking-[-0.035em] text-[#e4bd72]">
                 Ак Барс Развитие
               </div>
 
               <div className="mt-2 text-[11px] uppercase tracking-[0.24em] text-[#b5ae9f]">
-                
+                Журнал знаний и развития
               </div>
-            </a>
+            </Link>
 
             <div className="hidden flex-1 justify-end gap-5 md:flex">
               <div className="flex h-10 w-[330px] items-center gap-3 rounded-md border border-[#75603b]/55 bg-[#050b0f] px-4 text-[#837c6e]">
@@ -140,17 +150,17 @@ export default async function Home() {
 
           <nav className="flex overflow-x-auto border-t border-[#c99a4a]/15">
             {[
-              "Главная",
-              "Технологии",
-              "Люди и навыки",
-              "Бизнес",
-              "Банкинг",
-              "Исследования",
-              "Тренды",
-            ].map((item, index) => (
-              <a
+              ["Главная", "/"],
+              ["Технологии", "#"],
+              ["Люди и навыки", "#"],
+              ["Бизнес", "#"],
+              ["Банкинг", "#"],
+              ["Исследования", "#"],
+              ["Архив", "/archive"],
+            ].map(([item, href], index) => (
+              <Link
                 key={item}
-                href="#"
+                href={href}
                 className={`shrink-0 border-b-2 px-5 py-4 text-sm transition-colors ${
                   index === 0
                     ? "border-[#d2a453] bg-[#c99a4a]/10 text-[#e3bc70]"
@@ -158,7 +168,7 @@ export default async function Home() {
                 }`}
               >
                 {item}
-              </a>
+              </Link>
             ))}
           </nav>
         </div>
@@ -172,13 +182,16 @@ export default async function Home() {
           <div className="grid min-h-[500px] lg:grid-cols-[0.95fr_1.05fr]">
             <div className="relative z-10 flex flex-col justify-center py-16 lg:py-20">
               <div className="mb-5 text-[11px] font-semibold uppercase tracking-[0.28em] text-[#d0a55a]">
-                Главный материал
+                {digest
+                  ? `Выпуск от ${formatDate(digest.periodStart)}`
+                  : "Сегодняшний выпуск"}
               </div>
 
               {heroArticle ? (
                 <>
                   <h1 className="max-w-[720px] text-4xl leading-[1.03] tracking-[-0.045em] text-[#f2e9d6] sm:text-5xl lg:text-[56px]">
-                    {heroArticle.title}
+                    {heroArticle.translatedTitle ||
+                      heroArticle.title}
                   </h1>
 
                   {heroArticle.excerpt && (
@@ -188,24 +201,26 @@ export default async function Home() {
                   )}
 
                   <div className="mt-6 flex flex-wrap gap-2">
-                    {getTags(heroArticle.articleTags).map((tag) => (
-                      <span
-                        key={tag}
-                        className="rounded-md border border-[#6d644f] bg-[#111a20]/80 px-3 py-1.5 text-xs text-[#d0c5af]"
-                      >
-                        #{tag}
-                      </span>
-                    ))}
+                    {getTags(heroArticle.articleTags).map(
+                      (tag) => (
+                        <span
+                          key={tag}
+                          className="rounded-md border border-[#6d644f] bg-[#111a20]/80 px-3 py-1.5 text-xs text-[#d0c5af]"
+                        >
+                          #{tag}
+                        </span>
+                      ),
+                    )}
                   </div>
 
                   <div className="mt-7">
-                    <a
+                    <Link
                       href={`/articles/${heroArticle.id}`}
                       className="inline-flex items-center gap-3 rounded-sm bg-[#d4aa5d] px-5 py-3 text-sm font-semibold text-[#16110a] transition hover:bg-[#e1bd73]"
                     >
                       Читать статью
                       <Arrow />
-                    </a>
+                    </Link>
                   </div>
                 </>
               ) : (
@@ -215,7 +230,8 @@ export default async function Home() {
                   </h1>
 
                   <p className="mt-6 max-w-[650px] text-base leading-7 text-[#bdb5a6]">
-                    Журнал о развитии, технологиях, навыках и будущем работы.
+                    Сегодняшний выпуск пока не содержит
+                    материалов.
                   </p>
                 </>
               )}
@@ -256,36 +272,40 @@ export default async function Home() {
           <div className="mb-7 flex items-end justify-between">
             <div>
               <h2 className="text-3xl tracking-[-0.03em] text-[#21190f]">
-                Последние материалы
+                Материалы выпуска
               </h2>
 
               <div className="mt-2 h-px w-28 bg-[#8e6b37]/50" />
             </div>
 
-            <a
-              href="#"
+            <Link
+              href="/archive"
               className="hidden items-center gap-2 text-sm text-[#5c4930] transition hover:text-[#2f2518] md:flex"
             >
-              Смотреть все статьи
+              Архив выпусков
               <Arrow />
-            </a>
+            </Link>
           </div>
 
           {latestArticles.length > 0 ? (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
               {latestArticles.map((article) => {
-                const source = article.articleSources[0]?.source;
+                const source =
+                  article.articleSources[0]?.source;
                 const tags = getTags(article.articleTags);
 
                 return (
-                  <a
+                  <Link
                     key={article.id}
                     href={`/articles/${article.id}`}
                     className="article-card flex flex-col"
                   >
                     <div className="article-image h-36">
                       {article.imageUrl ? (
-                        <img src={article.imageUrl} alt="" />
+                        <img
+                          src={article.imageUrl}
+                          alt=""
+                        />
                       ) : (
                         <div className="flex h-full items-center justify-center text-5xl text-[#c99a4a]/35">
                           ✦
@@ -301,7 +321,8 @@ export default async function Home() {
 
                     <div className="flex flex-1 flex-col p-4">
                       <h3 className="text-[18px] font-semibold leading-[1.15] tracking-[-0.02em] text-[#22190e]">
-                        {article.title}
+                        {article.translatedTitle ||
+                          article.title}
                       </h3>
 
                       {article.excerpt && (
@@ -312,17 +333,24 @@ export default async function Home() {
 
                       <div className="mt-auto pt-5 text-xs text-[#4f4638]">
                         <div className="flex justify-between gap-2">
-                          <span>{source?.name ?? "Источник"}</span>
+                          <span>
+                            {source?.name ?? "Источник"}
+                          </span>
 
                           <span>
-                            {formatDate(article.publishedAt)}
+                            {formatDate(
+                              article.publishedAt,
+                            )}
                           </span>
                         </div>
 
                         {tags.length > 0 && (
                           <div className="mt-3 flex flex-wrap gap-1.5">
                             {tags.map((tag) => (
-                              <span className="tag" key={tag}>
+                              <span
+                                className="tag"
+                                key={tag}
+                              >
                                 #{tag}
                               </span>
                             ))}
@@ -330,13 +358,14 @@ export default async function Home() {
                         )}
                       </div>
                     </div>
-                  </a>
+                  </Link>
                 );
               })}
             </div>
           ) : (
             <div className="border border-[#6d5835]/25 bg-[#f1dfb9]/50 p-8 text-[#5f513d]">
-              Пока нет дополнительных материалов.
+              В сегодняшнем выпуске пока нет
+              дополнительных материалов.
             </div>
           )}
         </div>
@@ -349,7 +378,7 @@ export default async function Home() {
             <div>
               <div className="mb-6 flex items-center gap-4">
                 <h2 className="section-heading text-3xl">
-                  На что обратить внимание
+                  Ещё в выпуске
                 </h2>
 
                 <div className="h-px flex-1 bg-[#8b6b38]/40" />
@@ -357,36 +386,39 @@ export default async function Home() {
 
               <div className="overflow-hidden rounded-sm border border-[#765a32]/45">
                 {attentionArticles.length > 0 ? (
-                  attentionArticles.map((article, index) => {
-                    const analysis = article.analyses[0];
-
-                    return (
-                      <a
+                  attentionArticles.map(
+                    (article, index) => (
+                      <Link
                         key={article.id}
                         href={`/articles/${article.id}`}
                         className="flex gap-5 border-b border-[#765a32]/25 px-5 py-5 last:border-0 transition hover:bg-[#c99a4a]/5"
                       >
                         <div className="w-10 shrink-0 text-2xl text-[#d3a24f]">
-                          {String(index + 1).padStart(2, "0")}
+                          {String(index + 1).padStart(
+                            2,
+                            "0",
+                          )}
                         </div>
 
                         <div>
                           <h3 className="text-base text-[#e5dcc9]">
-                            {article.title}
+                            {article.translatedTitle ||
+                              article.title}
                           </h3>
 
-                          <p className="mt-1 text-sm leading-5 text-[#999287]">
-                            {analysis?.whyItMatters ||
-                              article.excerpt ||
-                              "Материал для дальнейшего изучения."}
-                          </p>
+                          {article.excerpt && (
+                            <p className="mt-1 text-sm leading-5 text-[#999287]">
+                              {article.excerpt}
+                            </p>
+                          )}
                         </div>
-                      </a>
-                    );
-                  })
+                      </Link>
+                    ),
+                  )
                 ) : (
                   <div className="px-5 py-6 text-sm leading-6 text-[#999287]">
-                    Здесь будут материалы, на которые стоит обратить внимание.
+                    Здесь будут остальные материалы
+                    сегодняшнего выпуска.
                   </div>
                 )}
               </div>
@@ -434,36 +466,33 @@ export default async function Home() {
         </div>
       </section>
 
-      {/* FOOTER */}
+      {/* ARCHIVE LINK */}
       <section className="parchment-section border-t border-[#8e6b37]/40">
         <div className="relative mx-auto max-w-[1450px] px-6 py-12 sm:px-8 lg:px-12">
           <div className="flex flex-col items-center justify-between gap-8 md:flex-row">
             <div className="max-w-2xl">
               <div className="text-xs uppercase tracking-[0.18em] text-[#75603d]">
-                Цитата недели
+                Архив
               </div>
 
-              <blockquote className="mt-3 text-2xl italic leading-9 text-[#302417]">
-                «Обучение — это не подготовка к жизни; обучение — это сама
-                жизнь».
+              <blockquote className="mt-3 text-2xl leading-9 text-[#302417]">
+                Прошлые выпуски остаются доступными для
+                чтения.
               </blockquote>
-
-              <div className="mt-3 text-sm text-[#77664a]">
-                — Джон Дьюи
-              </div>
             </div>
 
-            <a
-              href="#"
+            <Link
+              href="/archive"
               className="inline-flex shrink-0 items-center gap-3 border border-[#806332] bg-[#ead5a8] px-5 py-3 text-sm text-[#302316] transition hover:bg-[#f0dfb9]"
             >
-              Продолжить исследовать
+              Перейти в архив
               <Arrow />
-            </a>
+            </Link>
           </div>
         </div>
       </section>
 
+      {/* FOOTER */}
       <footer className="border-t border-[#c99a4a]/20 bg-[#060d12]">
         <div className="mx-auto flex max-w-[1450px] flex-col gap-5 px-6 py-8 text-sm text-[#817c71] sm:px-8 md:flex-row md:items-center md:justify-between lg:px-12">
           <div>
@@ -472,7 +501,8 @@ export default async function Home() {
             </div>
 
             <div className="mt-1 text-xs">
-              Внутренний журнал о развитии, технологиях и будущем работы
+              Внутренний журнал о развитии, технологиях и
+              будущем работы
             </div>
           </div>
 
