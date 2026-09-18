@@ -1,13 +1,9 @@
 import { prisma } from "@learning-intelligence/database";
 
-const CURRENT_SOURCE_SLUGS = new Set([
-  "google-ai",
-  "techcrunch-ai",
-  "the-verge-ai",
-  "wired-ai",
-  "ars-technica-ai",
-  "the-decoder",
-]);
+import {
+  CURRENT_SOURCE_SLUGS,
+  isRelevantCandidate,
+} from "./editorial-filter.js";
 
 const LOOKBACK_HOURS = 24;
 
@@ -58,6 +54,7 @@ async function main() {
 
   let removedOldSource = 0;
   let removedOldDate = 0;
+  let removedEditorial = 0;
   let kept = 0;
 
   for (const digestArticle of digestArticles) {
@@ -65,14 +62,14 @@ async function main() {
       (item) => item.source.slug,
     );
 
-    const hasCurrentSource = sources.some((slug) =>
+    const currentSource = sources.find((slug) =>
       CURRENT_SOURCE_SLUGS.has(slug),
     );
 
     let shouldRemove = false;
     let reason = "";
 
-    if (!hasCurrentSource) {
+    if (!currentSource) {
       shouldRemove = true;
       reason = "old source";
       removedOldSource++;
@@ -83,6 +80,16 @@ async function main() {
       shouldRemove = true;
       reason = "older than 24 hours";
       removedOldDate++;
+    } else if (
+      !isRelevantCandidate(
+        digestArticle.article.title,
+        digestArticle.article.originalContent.slice(0, 12000),
+        currentSource,
+      )
+    ) {
+      shouldRemove = true;
+      reason = "current editorial rules";
+      removedEditorial++;
     }
 
     if (shouldRemove) {
@@ -126,6 +133,9 @@ async function main() {
   console.log(`Kept digest articles: ${kept}`);
   console.log(`Removed old-source articles: ${removedOldSource}`);
   console.log(`Removed old articles from today: ${removedOldDate}`);
+  console.log(
+    `Removed articles by current editorial rules: ${removedEditorial}`,
+  );
   console.log(`Removed empty digests: ${emptyDigests.length}`);
 }
 

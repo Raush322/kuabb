@@ -77,7 +77,7 @@ export default async function ArticlePage({
             href="/"
             className="text-sm text-[#c99a4a] transition hover:text-[#e1bd73]"
           >
-            ← Ак Барс Развитие
+            ←  На главную
           </Link>
         </div>
       </header>

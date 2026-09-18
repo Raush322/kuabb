@@ -42,7 +42,31 @@ function getTags(
   return tags.slice(0, 4).map((item) => item.tag.name);
 }
 
-export default async function Home() {
+const TOPICS = [
+  {
+    slug: "ai-tech",
+    name: "AI и технологии",
+  },
+  {
+    slug: "business-innovation",
+    name: "Бизнес и инновации",
+  },
+  {
+    slug: "research",
+    name: "Исследования",
+  },
+];
+
+type HomeProps = {
+  searchParams: Promise<{
+    topic?: string;
+  }>;
+};
+
+export default async function Home({ searchParams }: HomeProps) {
+  const params = await searchParams;
+  const activeTopic = params.topic;
+
   const issueDate = new Date(
     new Intl.DateTimeFormat("en-CA", {
       timeZone: "Europe/Moscow",
@@ -77,6 +101,15 @@ export default async function Home() {
                 },
                 take: 5,
               },
+              articleTopics: {
+                where: {
+                  isPrimary: true,
+                },
+                include: {
+                  topic: true,
+                },
+                take: 1,
+              },
             },
           },
         },
@@ -84,8 +117,19 @@ export default async function Home() {
     },
   });
 
-  const articles =
+  let articles =
     digest?.articles.map((item) => item.article) ?? [];
+
+  if (activeTopic) {
+    articles = articles.filter(
+      (article) =>
+        article.articleTopics[0]?.topic.slug === activeTopic,
+    );
+  }
+
+  const activeTopicName =
+    TOPICS.find((topic) => topic.slug === activeTopic)?.name ??
+    null;
 
   const heroArticle = articles[0];
   const latestArticles = articles.slice(1, 5);
@@ -113,27 +157,37 @@ export default async function Home() {
           </div>
 
           <nav className="flex overflow-x-auto border-t border-[#c99a4a]/15">
-            {[
-              ["Главная", "/"],
-              ["AI и технологии", "#"],
-              ["Бизнес и инновации", "#"],
-              ["Люди и навыки", "#"],
-              ["Исследования", "#"],
-              ["Регулирование", "#"],
-              ["Архив", "/archive"],
-            ].map(([item, href], index) => (
+            <Link
+              href="/"
+              className={`shrink-0 border-b-2 px-5 py-5 text-sm transition-colors ${
+                !activeTopic
+                  ? "border-[#d2a453] bg-[#c99a4a]/10 text-[#e3bc70]"
+                  : "border-transparent text-[#c1baad] hover:text-[#e3bc70]"
+              }`}
+            >
+              Главная
+            </Link>
+
+            {TOPICS.map((topic) => (
               <Link
-                key={item}
-                href={href}
+                key={topic.slug}
+                href={`/?topic=${topic.slug}`}
                 className={`shrink-0 border-b-2 px-5 py-5 text-sm transition-colors ${
-                  index === 0
+                  activeTopic === topic.slug
                     ? "border-[#d2a453] bg-[#c99a4a]/10 text-[#e3bc70]"
                     : "border-transparent text-[#c1baad] hover:text-[#e3bc70]"
                 }`}
               >
-                {item}
+                {topic.name}
               </Link>
             ))}
+
+            <Link
+              href="/archive"
+              className="shrink-0 border-b-2 border-transparent px-5 py-5 text-sm text-[#c1baad] transition-colors hover:text-[#e3bc70]"
+            >
+              Архив
+            </Link>
           </nav>
         </div>
       </header>
@@ -143,17 +197,23 @@ export default async function Home() {
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_50%,rgba(106,78,39,0.25),transparent_38%)]" />
 
         <div className="relative mx-auto max-w-[1450px] px-6 sm:px-8 lg:px-12">
-          <div className="grid min-h-[500px] lg:grid-cols-[0.95fr_1.05fr]">
-            <div className="relative z-10 flex flex-col justify-center py-16 lg:py-20">
+          <div className="relative min-h-[500px]">
+            <div className="relative z-10 flex min-h-[500px] max-w-[1100px] flex-col justify-center py-16 lg:py-20">
               <div className="mb-5 text-[11px] font-semibold uppercase tracking-[0.28em] text-[#d0a55a]">
                 {digest
                   ? `Выпуск от ${formatDate(digest.periodStart)}`
                   : "Сегодняшний выпуск"}
               </div>
 
+              {activeTopicName && (
+                <div className="mb-4 text-sm text-[#a89a81]">
+                  Рубрика: {activeTopicName}
+                </div>
+              )}
+
               {heroArticle ? (
                 <>
-                  <h1 className="max-w-[720px] text-4xl leading-[1.03] tracking-[-0.045em] text-[#f2e9d6] sm:text-5xl lg:text-[56px]">
+                  <h1 className="max-w-[1250px] text-4xl leading-[1.03] tracking-[-0.045em] text-[#f2e9d6] sm:text-5xl lg:text-[56px]">
                     {heroArticle.translatedTitle ||
                       heroArticle.title}
                   </h1>
@@ -190,18 +250,19 @@ export default async function Home() {
               ) : (
                 <>
                   <h1 className="max-w-[720px] text-5xl leading-[1.03] tracking-[-0.045em] text-[#f2e9d6]">
-                    МирAI
+                    {activeTopicName ?? "МирAI"}
                   </h1>
 
                   <p className="mt-6 max-w-[650px] text-base leading-7 text-[#bdb5a6]">
-                    Главное о том, что нового появляется в мире
-                    искусственного интеллекта и технологий.
+                    {activeTopicName
+                      ? "Материалы этой рубрики в сегодняшнем выпуске."
+                      : "Главное о том, что нового появляется в мире искусственного интеллекта и технологий."}
                   </p>
                 </>
               )}
             </div>
 
-            <div className="relative min-h-[340px] lg:min-h-0">
+            <div className="absolute inset-0">
               {heroArticle?.imageUrl ? (
                 <img
                   src={heroArticle.imageUrl}
@@ -236,7 +297,9 @@ export default async function Home() {
           <div className="mb-7 flex items-end justify-between">
             <div>
               <h2 className="text-3xl tracking-[-0.03em] text-[#21190f]">
-                Материалы выпуска
+                {activeTopicName
+                  ? activeTopicName
+                  : "Материалы выпуска"}
               </h2>
 
               <div className="mt-2 h-px w-28 bg-[#8e6b37]/50" />
@@ -328,8 +391,8 @@ export default async function Home() {
             </div>
           ) : (
             <div className="border border-[#6d5835]/25 bg-[#f1dfb9]/50 p-8 text-[#5f513d]">
-              В сегодняшнем выпуске пока нет
-              дополнительных материалов.
+              В этой рубрике пока нет материалов
+              сегодняшнего выпуска.
             </div>
           )}
         </div>
@@ -399,14 +462,30 @@ export default async function Home() {
 
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  ["Модели и агенты", "Новые модели, AI-агенты и методы"],
-                  ["Продукты и инструменты", "Сервисы, функции и применения"],
-                  ["Бизнес и инновации", "Компании, рынки и новые сценарии"],
-                  ["Исследования", "Научные результаты и эксперименты"],
-                ].map(([title, subtitle]) => (
-                  <a
+                  [
+                    "Модели и агенты",
+                    "Новые модели, AI-агенты и методы",
+                    "ai-tech",
+                  ],
+                  [
+                    "Продукты и инструменты",
+                    "Сервисы, функции и применения",
+                    "ai-tech",
+                  ],
+                  [
+                    "Бизнес и инновации",
+                    "Компании, рынки и новые сценарии",
+                    "business-innovation",
+                  ],
+                  [
+                    "Исследования",
+                    "Научные результаты и эксперименты",
+                    "research",
+                  ],
+                ].map(([title, subtitle, topic]) => (
+                  <Link
                     key={title}
-                    href="#"
+                    href={`/?topic=${topic}`}
                     className="group relative min-h-[125px] overflow-hidden rounded-sm border border-[#765a32]/50 bg-[#101a20] p-5 transition hover:border-[#c99a4a]"
                   >
                     <div className="absolute right-4 top-2 text-5xl text-[#c99a4a]/10 transition group-hover:text-[#c99a4a]/20">
@@ -422,7 +501,7 @@ export default async function Home() {
                         {subtitle}
                       </div>
                     </div>
-                  </a>
+                  </Link>
                 ))}
               </div>
             </div>
