@@ -696,11 +696,12 @@ function classifyArticleTopic(
 
   /*
    * Editorial classification priority:
-   * 1. Concrete commercial/product stories -> Business & innovation.
-   * 2. Explicit model-misalignment incidents -> Other.
-   * 3. Research/scientific results -> Research.
-   * 4. Regulation, law, society, military, safety and public debate -> Other.
-   * 5. AI products, models, agents and applications -> AI & technology.
+   * 1. Explicit model-misalignment incidents -> Other.
+   * 2. Product/tool/service stories -> Products & tools.
+   * 3. Concrete commercial/company stories -> Business & innovation.
+   * 4. Research/scientific results -> Research.
+   * 5. Regulation, law, society, military, safety and public debate -> Other.
+   * 6. AI models, agents and applications -> AI & technology.
    */
 
   const researchTitlePatterns = [
@@ -801,7 +802,7 @@ function classifyArticleTopic(
   // Explicit model-behavior incidents are Other.
   if (misalignmentMatches > 0) {
     return {
-      topic: TOPIC_DEFINITIONS[3],
+      topic: TOPIC_DEFINITIONS[4],
       confidence: 0.95,
     };
   }
@@ -821,7 +822,7 @@ function classifyArticleTopic(
   // action, launch, market move or company activity.
   if (businessMatches > 0) {
     return {
-      topic: TOPIC_DEFINITIONS[1],
+      topic: TOPIC_DEFINITIONS[2],
       confidence: businessMatches >= 2 ? 0.95 : 0.9,
     };
   }
@@ -830,14 +831,14 @@ function classifyArticleTopic(
   // existential risk or another consequence.
   if (researchMatches > 0) {
     return {
-      topic: TOPIC_DEFINITIONS[2],
+      topic: TOPIC_DEFINITIONS[3],
       confidence: researchMatches >= 2 ? 0.95 : 0.9,
     };
   }
 
   if (otherMatches > 0) {
     return {
-      topic: TOPIC_DEFINITIONS[3],
+      topic: TOPIC_DEFINITIONS[4],
       confidence: otherMatches >= 2 ? 0.95 : 0.9,
     };
   }
@@ -851,7 +852,7 @@ function classifyArticleTopic(
 
   if (count(businessBodyPatterns, normalizedText) >= 2) {
     return {
-      topic: TOPIC_DEFINITIONS[1],
+      topic: TOPIC_DEFINITIONS[2],
       confidence: 0.8,
     };
   }
@@ -864,7 +865,7 @@ function classifyArticleTopic(
   }
 
   return {
-    topic: TOPIC_DEFINITIONS[3],
+    topic: TOPIC_DEFINITIONS[4],
     confidence: 0.7,
   };
 }
