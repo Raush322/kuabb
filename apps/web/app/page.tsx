@@ -59,6 +59,14 @@ const TOPICS = [
   },
 ];
 
+const TOPIC_NAMES = [
+  ...TOPICS,
+  {
+    slug: "products-tools",
+    name: "Продукты и инструменты",
+  },
+];
+
 type HomeProps = {
   searchParams: Promise<{
     topic?: string;
@@ -121,7 +129,7 @@ export default async function Home({ searchParams }: HomeProps) {
   }
 
   const activeTopicName =
-    TOPICS.find((topic) => topic.slug === activeTopic)?.name ??
+    TOPIC_NAMES.find((topic) => topic.slug === activeTopic)?.name ??
     null;
 
   const heroArticle = articles[0];
@@ -462,8 +470,8 @@ export default async function Home({ searchParams }: HomeProps) {
                   ],
                   [
                     "Продукты и инструменты",
-                    "Сервисы, функции и применения",
-                    "ai-tech",
+                    "AI-сервисы, новые функции и возможности",
+                    "products-tools",
                   ],
                   [
                     "Бизнес и инновации",
