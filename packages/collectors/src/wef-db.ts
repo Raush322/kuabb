@@ -513,11 +513,38 @@ const TOPIC_DEFINITIONS = [
     ],
   },
   {
+    slug: "products-tools",
+    name: "Продукты и инструменты",
+    description:
+      "AI-сервисы и инструменты, новые функции, режимы, интеграции и практические возможности.",
+    sortOrder: 2,
+    patterns: [
+      /\bai (?:tool|tools|service|services|app|apps|assistant|assistants)\b/,
+      /\bai[- ]powered (?:tool|tools|service|app|apps|assistant|software)\b/,
+      /\b(?:tool|service|app|assistant|software|platform)\b.*\b(?:feature|features|mode|modes|capabilit(?:y|ies)|update|updates)\b/,
+      /\b(?:feature|features|mode|modes|capabilit(?:y|ies)|update|updates)\b.*\b(?:tool|service|app|assistant|software|platform)\b/,
+      /\bplugin(s)?\b/,
+      /\bextension(s)?\b/,
+      /\bcopilot\b/,
+      /\bworkspace\b/,
+      /\bgenerator(s)?\b/,
+      /\beditor\b.*\bai\b/,
+      /\bфункци[яи]\b.*\b(?:сервис|инструмент|продукт|приложен)/,
+      /\b(?:сервис|инструмент|продукт|приложен)\w*\b.*\bфункци[яи]\b/,
+      /\bвозможност[ьи]\b.*\b(?:сервис|инструмент|продукт|приложен)/,
+      /\bновый режим\b/,
+      /\bрежим\b.*\b(?:сервис|инструмент|продукт|приложен)/,
+      /\bплагин/,
+      /\bрасширени[ея]/,
+      /\bассистент\w*\b.*\b(?:функци|возможност|режим)/,
+    ],
+  },
+  {
     slug: "business-innovation",
     name: "Бизнес и инновации",
     description:
       "Компании, стартапы, инвестиции, сделки, рынок, продукты как бизнес и внедрение ИИ.",
-    sortOrder: 2,
+    sortOrder: 3,
     patterns: [
       /\bstartup(s)?\b/,
       /\bfounder(s)?\b/,
@@ -558,7 +585,7 @@ const TOPIC_DEFINITIONS = [
     name: "Исследования",
     description:
       "Научные исследования, эксперименты, новые методы, оценки моделей и научные результаты.",
-    sortOrder: 3,
+    sortOrder: 4,
     patterns: [
       /\bresearcher(s)?\b/,
       /\bresearch\b/,
@@ -593,7 +620,7 @@ const TOPIC_DEFINITIONS = [
     name: "Другое",
     description:
       "Релевантные материалы об ИИ и технологиях, которые не относятся однозначно к основным рубрикам.",
-    sortOrder: 4,
+    sortOrder: 5,
     patterns: [
       /\belection(s)?\b/,
       /\bsenate\b/,
@@ -687,6 +714,29 @@ function classifyArticleTopic(
     /\bгипотез/, /\bтеорем/,
   ];
 
+  const productTitlePatterns = [
+    /\bai (?:tool|tools|service|services|app|apps|assistant|assistants)\b/,
+    /\bai[- ]powered (?:tool|tools|service|app|apps|assistant|software)\b/,
+    /\bplugin(s)?\b/,
+    /\bextension(s)?\b/,
+    /\bcopilot\b/,
+    /\bworkspace\b/,
+    /\bgenerator(s)?\b/,
+    /\bfeature(s)?\b.*\b(?:ai|claude|gemini|gpt|openai|anthropic)\b/,
+    /\b(?:ai|claude|gemini|gpt|openai|anthropic)\b.*\bfeature(s)?\b/,
+    /\bnew mode\b/,
+    /\bmode\b.*\b(?:ai|claude|gemini|gpt|openai|anthropic)\b/,
+    /\b(?:tool|service|app|assistant|software|platform)\b.*\b(?:capabilit(?:y|ies)|feature|mode|update)\b/,
+    /\b(?:capabilit(?:y|ies)|feature|mode|update)\b.*\b(?:tool|service|app|assistant|software|platform)\b/,
+    /\bфункци[яи]\b.*\b(?:сервис|инструмент|продукт|приложен)/,
+    /\b(?:сервис|инструмент|продукт|приложен)\w*\b.*\bфункци[яи]\b/,
+    /\bвозможност[ьи]\b.*\b(?:сервис|инструмент|продукт|приложен)/,
+    /\bновый режим\b/,
+    /\bрежим\b.*\b(?:сервис|инструмент|продукт|приложен)/,
+    /\bплагин/,
+    /\bрасширени[ея]/,
+  ];
+
   const businessTitlePatterns = [
     /\bstartup(s)?\b/, /\bfounder(s)?\b/, /\braises?\b/, /\braised\b/,
     /\bfunding\b/, /\binvestment(s)?\b/, /\binvestor(s)?\b/,
@@ -739,6 +789,7 @@ function classifyArticleTopic(
     /\btried to jailbreak\b/, /\bjailbreak itself\b/,
   ];
 
+  const productMatches = count(productTitlePatterns, normalizedText);
   const researchMatches = count(researchTitlePatterns, normalizedTitle);
   const businessMatches = count(businessTitlePatterns, normalizedTitle);
   const otherMatches = count(otherTitlePatterns, normalizedTitle);
@@ -752,6 +803,16 @@ function classifyArticleTopic(
     return {
       topic: TOPIC_DEFINITIONS[3],
       confidence: 0.95,
+    };
+  }
+
+  // Product/tool stories get their own topic when the headline/body clearly
+  // describes an AI service, tool, feature, mode, integration or capability.
+  // Explicitly commercial stories remain Business & innovation.
+  if (productMatches > 0 && businessMatches === 0) {
+    return {
+      topic: TOPIC_DEFINITIONS[1],
+      confidence: productMatches >= 2 ? 0.95 : 0.9,
     };
   }
 
@@ -896,6 +957,44 @@ async function assignPrimaryTopic(
   );
 }
 
+
+async function reclassifyDigestArticles(
+  digestId: string,
+): Promise<void> {
+  const digestArticles = await prisma.digestArticle.findMany({
+    where: {
+      digestId,
+    },
+    include: {
+      article: {
+        include: {
+          articleSources: {
+            include: {
+              source: true,
+            },
+            take: 1,
+          },
+        },
+      },
+    },
+  });
+
+  for (const item of digestArticles) {
+    const sourceSlug =
+      item.article.articleSources[0]?.source.slug;
+
+    if (!sourceSlug) {
+      continue;
+    }
+
+    await assignPrimaryTopic(
+      item.article.id,
+      item.article.title,
+      item.article.originalContent?.slice(0, 12000) ?? "",
+      sourceSlug,
+    );
+  }
+}
 
 async function getTodayDigest() {
   const issueDate = getMoscowDate();
@@ -1545,6 +1644,8 @@ async function main() {
         }
       }
     }
+
+    await reclassifyDigestArticles(digest.id);
 
     await prisma.collectionRun.update({
       where: { id: run.id },
