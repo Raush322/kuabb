@@ -11,25 +11,39 @@ function formatDate(date: Date) {
   }).format(date);
 }
 
+function getMaterialWord(count: number) {
+  if (count === 1) return "материал";
+  if (count >= 2 && count <= 4) return "материала";
+  return "материалов";
+}
+
+function IssueIcon() {
+  return (
+    <div className="relative mx-auto flex h-36 w-28 items-center justify-center">
+      <div className="absolute h-28 w-20 rotate-[-6deg] border border-[#8c6b38]/50 bg-[#d8bc82]/25" />
+      <div className="absolute h-28 w-20 rotate-[6deg] border border-[#8c6b38]/35 bg-[#d8bc82]/15" />
+      <div className="relative flex h-32 w-24 flex-col justify-center border border-[#b08a4a] bg-[#ead6a8] px-3 text-center text-[#302315] shadow-xl">
+        <div className="text-3xl text-[#a77b32]">✦</div>
+        <div className="mt-2 border-t border-[#85632f]/40 pt-2 font-serif text-[10px] uppercase tracking-[0.18em]">
+          МирAI
+        </div>
+        <div className="mt-1 text-[9px] leading-3 text-[#5d492d]">
+          выпуск
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default async function ArchivePage() {
   const issues = await prisma.digest.findMany({
     orderBy: {
       periodStart: "desc",
     },
     include: {
-      articles: {
-        orderBy: {
-          position: "asc",
-        },
-        include: {
-          article: {
-            select: {
-              id: true,
-              title: true,
-              translatedTitle: true,
-              imageUrl: true,
-            },
-          },
+      _count: {
+        select: {
+          articles: true,
         },
       },
     },
@@ -69,12 +83,12 @@ export default async function ArchivePage() {
           </p>
 
           <h1 className="font-serif text-5xl font-semibold tracking-tight text-[#f1ead9]">
-            Предыдущие выпуски
+            Все выпуски
           </h1>
 
           <p className="mt-5 text-base leading-7 text-[#aaa59a]">
-            Каждый выпуск собирает материалы, отобранные за отдельные сутки.
-            Старые выпуски остаются доступными в архиве.
+            Один день — один выпуск. Откройте нужную дату, чтобы посмотреть
+            все материалы этого выпуска.
           </p>
         </div>
 
@@ -83,64 +97,29 @@ export default async function ArchivePage() {
             Архив пока пуст.
           </div>
         ) : (
-          <div className="space-y-10">
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {issues.map((issue) => (
-              <section
+              <Link
                 key={issue.id}
-                className="border border-[#4c4538] bg-[#191b20] p-6 md:p-8"
+                href={`/archive/${issue.id}`}
+                className="group border border-[#4c4538] bg-[#191b20] p-6 transition hover:-translate-y-1 hover:border-[#8a7448] hover:bg-[#1d2026]"
               >
-                <div className="mb-6 flex flex-wrap items-end justify-between gap-4 border-b border-[#39362f] pb-5">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.2em] text-[#a78b52]">
-                      Выпуск
-                    </p>
+                <IssueIcon />
 
-                    <h2 className="mt-2 font-serif text-3xl font-semibold text-[#eee8d8]">
-                      {formatDate(issue.periodStart)}
-                    </h2>
+                <div className="mt-4 border-t border-[#39362f] pt-5">
+                  <div className="text-xs uppercase tracking-[0.18em] text-[#a78b52]">
+                    Выпуск
                   </div>
 
-                  <span className="text-sm text-[#8f8b82]">
-                    {issue.articles.length}{" "}
-                    {issue.articles.length === 1
-                      ? "материал"
-                      : issue.articles.length >= 2 &&
-                          issue.articles.length <= 4
-                        ? "материала"
-                        : "материалов"}
-                  </span>
+                  <h2 className="mt-2 font-serif text-2xl font-semibold leading-tight text-[#eee8d8] group-hover:text-[#d7b56d]">
+                    {formatDate(issue.periodStart)}
+                  </h2>
+
+                  <div className="mt-3 text-sm text-[#8f8b82]">
+                    {issue._count.articles} {getMaterialWord(issue._count.articles)}
+                  </div>
                 </div>
-
-                {issue.articles.length > 0 ? (
-                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                    {issue.articles.map(({ article }) => (
-                      <Link
-                        key={article.id}
-                        href={`/articles/${article.id}`}
-                        className="group border border-[#3f3b33] bg-[#15171c] p-5 transition hover:border-[#8a7448]"
-                      >
-                        {article.imageUrl ? (
-                          <div className="mb-4 aspect-[16/9] overflow-hidden bg-[#25272d]">
-                            <img
-                              src={article.imageUrl}
-                              alt=""
-                              className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.02]"
-                            />
-                          </div>
-                        ) : null}
-
-                        <h3 className="font-serif text-xl font-semibold leading-snug text-[#e9e2d2] group-hover:text-[#d7b56d]">
-                          {article.translatedTitle || article.title}
-                        </h3>
-                      </Link>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-[#8f8b82]">
-                    В этом выпуске пока нет материалов.
-                  </p>
-                )}
-              </section>
+              </Link>
             ))}
           </div>
         )}
