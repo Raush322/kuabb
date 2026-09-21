@@ -4,6 +4,7 @@ export interface ExtractedArticle {
   title: string;
   author: string | null;
   publishedAt: string | null;
+  imageUrl: string | null;
   text: string;
 }
 
@@ -600,6 +601,122 @@ function extractAuthor(
   );
 }
 
+
+
+function normalizeImageUrl(
+  value: string | null,
+  pageUrl: string,
+): string | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value, pageUrl);
+
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function getJsonLdImageUrl(
+  objects: unknown[],
+  pageUrl: string,
+): string | null {
+  function find(value: unknown): string | null {
+    if (!value) {
+      return null;
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const result = find(item);
+
+        if (result) {
+          return result;
+        }
+      }
+
+      return null;
+    }
+
+    if (typeof value !== "object") {
+      return null;
+    }
+
+    const object = value as Record<string, unknown>;
+
+    const image = object.image;
+
+    if (typeof image === "string") {
+      const result = normalizeImageUrl(image, pageUrl);
+
+      if (result) {
+        return result;
+      }
+    }
+
+    if (image && typeof image === "object") {
+      const imageObject = image as Record<string, unknown>;
+
+      for (const key of ["url", "contentUrl"]) {
+        const candidate = imageObject[key];
+
+        if (typeof candidate === "string") {
+          const result = normalizeImageUrl(candidate, pageUrl);
+
+          if (result) {
+            return result;
+          }
+        }
+      }
+    }
+
+    for (const child of Object.values(object)) {
+      const result = find(child);
+
+      if (result) {
+        return result;
+      }
+    }
+
+    return null;
+  }
+
+  return find(objects);
+}
+
+function extractImageUrl(
+  $: cheerio.CheerioAPI,
+  pageUrl: string,
+): string | null {
+  const metaImage = getMeta($, [
+    'meta[property="og:image"]',
+    'meta[property="og:image:url"]',
+    'meta[name="twitter:image"]',
+    'meta[name="twitter:image:src"]',
+  ]);
+
+  const normalizedMetaImage = normalizeImageUrl(
+    metaImage,
+    pageUrl,
+  );
+
+  if (normalizedMetaImage) {
+    return normalizedMetaImage;
+  }
+
+  return getJsonLdImageUrl(
+    getJsonLdObjects($),
+    pageUrl,
+  );
+}
+
 function extractPublishedAt(
   $: cheerio.CheerioAPI,
 ): string | null {
@@ -714,6 +831,7 @@ export async function extractArticle(
 
   const author = extractAuthor($);
   const publishedAt = extractPublishedAt($);
+  const imageUrl = extractImageUrl($, url);
 
   /*
    * Теперь удаляем служебные элементы перед извлечением текста.
@@ -742,6 +860,7 @@ export async function extractArticle(
     title,
     author,
     publishedAt,
+    imageUrl,
     text,
   };
 }
