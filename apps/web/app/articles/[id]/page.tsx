@@ -111,6 +111,16 @@ export default async function ArticlePage({
           </h1>
         )}
 
+        {article.imageUrl && (
+          <div className="mt-10 overflow-hidden border border-[#75603b]/30 bg-[#111d24]">
+            <img
+              src={article.imageUrl}
+              alt=""
+              className="max-h-[620px] w-full object-cover"
+            />
+          </div>
+        )}
+
         {article.author && (
           <div className="mt-6 text-sm text-[#b8b2a5]">
             Автор: {article.author}
