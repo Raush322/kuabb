@@ -111,7 +111,7 @@ function cleanTitle(title: string): string {
 
 function extractRssImage(
   $: import("cheerio").CheerioAPI,
-  element: import("cheerio").Element,
+  element: any,
   baseUrl: string,
 ): string | null {
   const candidates = [
