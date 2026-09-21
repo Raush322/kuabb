@@ -17,12 +17,14 @@ type Candidate = {
   url: string;
   publishedAt: string | null;
   description: string;
+  imageUrl: string | null;
 };
 
 type ExtractedArticle = {
   title: string;
   author: string | null;
   publishedAt: string | null;
+  imageUrl: string | null;
   text: string;
 };
 
@@ -104,6 +106,43 @@ function cleanTitle(title: string): string {
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+
+function extractRssImage(
+  $: import("cheerio").CheerioAPI,
+  element: import("cheerio").Element,
+  baseUrl: string,
+): string | null {
+  const candidates = [
+    $(element).find("enclosure").first().attr("url"),
+    $(element).find("media\\:content").first().attr("url"),
+    $(element).find("media\\:thumbnail").first().attr("url"),
+    $(element).find("content\\:content").first().attr("url"),
+    $(element).find("image").first().attr("href"),
+    $(element).find("image").first().text().trim(),
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+
+    try {
+      const imageUrl = new URL(candidate, baseUrl);
+
+      if (
+        imageUrl.protocol === "http:" ||
+        imageUrl.protocol === "https:"
+      ) {
+        return imageUrl.toString();
+      }
+    } catch {
+      // Игнорируем некорректный URL изображения.
+    }
+  }
+
+  return null;
 }
 
 function cleanXmlText(value: string | undefined): string {
@@ -1341,6 +1380,25 @@ async function processCandidate(params: {
       };
     }
 
+    if (
+      !existingArticle.imageUrl &&
+      (details.imageUrl || candidate.imageUrl)
+    ) {
+      await prisma.article.update({
+        where: {
+          id: existingArticle.id,
+        },
+        data: {
+          imageUrl:
+            details.imageUrl ?? candidate.imageUrl,
+        },
+      });
+
+      console.log(
+        "Preview image saved for existing article.",
+      );
+    }
+
     await saveAcceptedArticleSource(
       existingArticle.id,
       source.id,
@@ -1407,7 +1465,7 @@ async function processCandidate(params: {
           : null,
       language: sourceConfig.language,
       excerpt: null,
-      imageUrl: null,
+      imageUrl: details.imageUrl ?? candidate.imageUrl,
       contentHash,
       originalContent: details.text,
       status: "NEW",
