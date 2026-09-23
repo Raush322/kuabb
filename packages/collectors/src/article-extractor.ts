@@ -9,6 +9,7 @@ export interface ExtractedArticle {
   title: string;
   author: string | null;
   publishedAt: string | null;
+  imageUrl: string | null;
   text: string;
 }
 
@@ -141,6 +142,68 @@ function getJsonLdArticleBody($: cheerio.CheerioAPI): string | null {
 
 function getJsonLdPublishedAt($: cheerio.CheerioAPI): string | null {
   return findJsonLdValue(getJsonLdObjects($), ["datePublished", "dateCreated"]);
+}
+
+function findJsonLdImage(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findJsonLdImage(item);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  const object = value as Record<string, unknown>;
+
+  const image = object["image"];
+  if (typeof image === "string" && image.trim()) {
+    return image.trim();
+  }
+
+  if (image && typeof image === "object") {
+    const imageObject = image as Record<string, unknown>;
+
+    for (const key of ["url", "contentUrl"]) {
+      const candidate = imageObject[key];
+      if (typeof candidate === "string" && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+  }
+
+  for (const child of Object.values(object)) {
+    const found = findJsonLdImage(child);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+function getJsonLdImageUrl($: cheerio.CheerioAPI): string | null {
+  return findJsonLdImage(getJsonLdObjects($));
+}
+
+function extractImageUrl(
+  $: cheerio.CheerioAPI,
+  pageUrl: string,
+): string | null {
+  const raw =
+    getMeta($, [
+      'meta[property="og:image"]',
+      'meta[property="og:image:url"]',
+      'meta[name="twitter:image"]',
+      'meta[name="twitter:image:src"]',
+    ]) || getJsonLdImageUrl($);
+
+  if (!raw) return null;
+
+  try {
+    return new URL(raw, pageUrl).toString();
+  } catch {
+    return null;
+  }
 }
 
 function getJsonLdAuthor($: cheerio.CheerioAPI): string | null {
@@ -689,10 +752,13 @@ export async function extractArticle(url: string, fallbackTitle?: string): Promi
     );
   }
 
+  const imageUrl = extractImageUrl($, url);
+
   return {
     title,
     author,
     publishedAt,
+    imageUrl,
     text,
   };
 }
