@@ -17,14 +17,12 @@ type Candidate = {
   url: string;
   publishedAt: string | null;
   description: string;
-  imageUrl: string | null;
 };
 
 type ExtractedArticle = {
   title: string;
   author: string | null;
   publishedAt: string | null;
-  imageUrl: string | null;
   text: string;
 };
 
@@ -41,60 +39,93 @@ function getDateOnly(dateString: string): Date {
   return new Date(`${dateString}T00:00:00.000Z`);
 }
 
-async function fetchFeed(url: string): Promise<string> {
+class SourceFetchError extends Error {
+  readonly status: number | null;
+  readonly url: string;
+
+  constructor(message: string, url: string, status: number | null = null) {
+    super(message);
+    this.name = "SourceFetchError";
+    this.status = status;
+    this.url = url;
+  }
+}
+
+function isPermanentHttpError(error: unknown): boolean {
+  if (!(error instanceof SourceFetchError)) return false;
+  return error.status === 401 || error.status === 403 || error.status === 404;
+}
+
+async function fetchFeed(url: string, mode: "RSS" | "HTML" = "RSS", referer?: string): Promise<string> {
   const MAX_ATTEMPTS = 3;
   const RETRY_DELAY_MS = 2000;
-
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      console.log(
-        `Fetching RSS feed: ${url} (attempt ${attempt}/${MAX_ATTEMPTS})`,
-      );
+      console.log(`${mode === "HTML" ? "Fetching HTML page" : "Fetching RSS feed"}: ${url} (attempt ${attempt}/${MAX_ATTEMPTS})`);
 
       const response = await fetch(url, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
-          Accept:
-            "text/html,application/xhtml+xml,application/rss+xml,application/atom+xml,application/xml,text/xml",
-        },
+        headers: mode === "HTML"
+          ? {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+              Accept: "text/html,application/xhtml+xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+              "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+              "Cache-Control": "no-cache",
+              Pragma: "no-cache",
+              ...(referer ? { Referer: referer } : {}),
+            }
+          : {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
+              Accept: "application/rss+xml,application/atom+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+              "Accept-Language": "en-US,en;q=0.8,ru;q=0.7",
+            },
       });
 
       if (!response.ok) {
-        throw new Error(
+        throw new SourceFetchError(
           `HTTP ${response.status}: ${response.statusText}`,
+          url,
+          response.status,
         );
       }
 
       return await response.text();
     } catch (error) {
       lastError = error;
-
       console.error(
-        `RSS feed request failed (attempt ${attempt}/${MAX_ATTEMPTS}): ${url}`,
+        `${mode === "HTML" ? "HTML page request" : "RSS feed request"} failed (attempt ${attempt}/${MAX_ATTEMPTS}): ${url}`,
       );
       console.error(error);
 
+      // 401/403/404 are deterministic source-access failures.
+      // Retrying them only creates duplicate log noise and obscures the
+      // real collection error count.
+      if (isPermanentHttpError(error)) {
+        throw error;
+      }
+
       if (attempt < MAX_ATTEMPTS) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, RETRY_DELAY_MS),
-        );
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
       }
     }
   }
 
-  throw lastError instanceof Error
-    ? lastError
-    : new Error(String(lastError));
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 function normalizeUrl(url: string, baseUrl: string): string {
   try {
     const parsed = new URL(url, baseUrl);
     parsed.hash = "";
-    parsed.search = "";
+
+    // Банки.ру identifies news articles by the `id` query parameter:
+    // /news/lenta/?id=11027456. Dropping the query would collapse every
+    // article to the same section URL and make deduplication/collection fail.
+    if (parsed.hostname.replace(/^www\./, "") !== "banki.ru" || !parsed.searchParams.has("id")) {
+      parsed.search = "";
+    }
+
     return parsed.toString();
   } catch {
     return url;
@@ -108,43 +139,6 @@ function cleanTitle(title: string): string {
     .trim();
 }
 
-
-function extractRssImage(
-  $: import("cheerio").CheerioAPI,
-  element: any,
-  baseUrl: string,
-): string | null {
-  const candidates = [
-    $(element).find("enclosure").first().attr("url"),
-    $(element).find("media\\:content").first().attr("url"),
-    $(element).find("media\\:thumbnail").first().attr("url"),
-    $(element).find("content\\:content").first().attr("url"),
-    $(element).find("image").first().attr("href"),
-    $(element).find("image").first().text().trim(),
-  ];
-
-  for (const candidate of candidates) {
-    if (!candidate) {
-      continue;
-    }
-
-    try {
-      const imageUrl = new URL(candidate, baseUrl);
-
-      if (
-        imageUrl.protocol === "http:" ||
-        imageUrl.protocol === "https:"
-      ) {
-        return imageUrl.toString();
-      }
-    } catch {
-      // Игнорируем некорректный URL изображения.
-    }
-  }
-
-  return null;
-}
-
 function cleanXmlText(value: string | undefined): string {
   return cleanTitle(
     (value ?? "")
@@ -153,35 +147,17 @@ function cleanXmlText(value: string | undefined): string {
   );
 }
 
-function isInfrastructureCandidate(title: string): boolean {
-  const normalized = title.toLowerCase();
-
-  const excludedPatterns = [
-    /\bdata cent(er|ers)\b/,
-    /\bдата[- ]цент(р|ры)\b/,
-    /\bgpu\b/,
-    /\btpu\b/,
-    /\bcompute\b/,
-    /\bcomputing\b/,
-    /\binference\b/,
-    /\bsemiconductor/,
-    /\bchip(s)?\b/,
-    /\bчип(ы|ов|ах)?\b/,
-    /\benergy for ai\b/,
-    /\bai energy\b/,
-    /\belectricity.*ai\b/,
-    /\bai.*electricity\b/,
-    /\bpower grid\b/,
-    /\bgrid.*ai\b/,
-  ];
-
-  return excludedPatterns.some((pattern) =>
-    pattern.test(normalized),
-  );
+function normalizeForMatch(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^a-zа-я0-9]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function isPromotionalCandidate(title: string): boolean {
-  const normalized = title.toLowerCase();
+  const normalized = normalizeForMatch(title);
 
   const strongPromotionalPatterns = [
     /\bfinal \d+ hours?\b/,
@@ -221,11 +197,8 @@ function isPromotionalCandidate(title: string): boolean {
     return true;
   }
 
-  // Generic event/conference wording is not enough by itself.
-  // It becomes promotional only when combined with an explicit call to action.
   const genericEventPatterns = [
     /\bconference\b/,
-    /\bconference(s)?\b/,
     /\bevent(s)?\b/,
     /\bмероприяти/,
     /\bконференци/,
@@ -251,158 +224,195 @@ function isPromotionalCandidate(title: string): boolean {
   );
 }
 
-function hasAiSignal(title: string, description = ""): boolean {
-  const normalizedTitle = title.toLowerCase();
-  const normalizedText = `${title} ${description}`.toLowerCase();
+function getSourceConfig(sourceSlug: string): SourceConfig | undefined {
+  return SOURCES.find((source) => source.slug === sourceSlug);
+}
 
-  const titlePatterns = [
-    /\bartificial intelligence\b/,
-    /\bai\b/,
-    /\bai[- ]powered\b/,
-    /\bai[- ]generated\b/,
-    /\bai[- ]driven\b/,
-    /\bai[- ]agent(s)?\b/,
-    /\bagentic\b/,
-    /\bautonomous agent(s)?\b/,
-    /\bllm(s)?\b/,
-    /\blarge language model(s)?\b/,
-    /\bfoundation model(s)?\b/,
-    /\b(?:new|frontier|reasoning|multimodal) model(s)?\b/,
-    /\bmodel(s)?\s+(?:release|launch|update|training|evaluation)\b/,
-    /\bmultimodal\b/,
-    /\bmachine learning\b/,
-    /\bdeep learning\b/,
-    /\bneural network(s)?\b/,
-    /\bcomputer vision\b/,
-    /\breinforcement learning\b/,
-    /\bmodel(s)?\b/,
-    /\brobot(s|ics)?\b/,
-    /\bhumanoid(s)?\b/,
-    /\balignment\b/,
-    /\bjailbreak(s|ed)?\b/,
-    /\bprompt injection\b/,
-    /\bsynthetic (data|media|content)\b/,
-    /\bгенеративн/,
-    /\bискусственн.*интеллект/,
-    /\bмашинн.*обучен/,
-    /\bнейросет/,
-    /\bмультимодальн/,
-    /\bробот(ы|а|ов|ам|ами|ах)?\b/,
-    /\bавтономн.*(агент|систем|робот|ai|ии)\b/,
-    /\bclaude\b/,
-    /\bgemini\b/,
-    /\bgpt(?:-\d+(?:\.\d+)?)?\b/,
-    /\bopenai\b/,
-    /\banthropic\b/,
-    /\bdeepmind\b/,
-    /\bmistral\b/,
-    /\bhugging face\b/,
-    /\bmeta ai\b/,
-    /\bmicrosoft ai\b/,
-  ];
-
-  if (titlePatterns.some((pattern) => pattern.test(normalizedTitle))) {
-    return true;
+function testPattern(pattern: RegExp, text: string): boolean {
+  if (/[А-Яа-яЁё]/.test(pattern.source)) {
+    const russianSafePattern = new RegExp(
+      pattern.source.replace(/\\b/g, ""),
+      pattern.flags,
+    );
+    return russianSafePattern.test(text);
   }
 
-  const textPatterns = [
-    /\bartificial intelligence\b/,
-    /\bai\b/,
-    /\bmachine learning\b/,
-    /\blarge language model\b/,
-    /\bfoundation model\b/,
-    /\bmultimodal\b/,
-    /\bllm\b/,
-    /\bai agent\b/,
-    /\brobotics\b/,
-    /\bcomputer vision\b/,
-    /\balignment\b/,
-    /\bprompt injection\b/,
-    /\bгенеративн/,
-    /\bискусственн.*интеллект/,
-    /\bнейросет/,
-    /\bмультимодальн/,
-    /\bclaude\b/,
-    /\bgemini\b/,
-    /\bgpt\b/,
-    /\bopenai\b/,
-    /\banthropic\b/,
-    /\bdeepmind\b/,
-  ];
-
-  let matches = 0;
-
-  for (const pattern of textPatterns) {
-    if (pattern.test(normalizedText)) {
-      matches++;
-    }
-  }
-
-  return matches >= 2;
+  return pattern.test(text);
 }
 
-function isAiFocusedSource(sourceSlug: string): boolean {
-  return [
-    "google-ai",
-    "techcrunch-ai",
-    "the-verge-ai",
-    "wired-ai",
-    "ars-technica-ai",
-    "the-decoder",
-  ].includes(sourceSlug);
+function hasAnySignal(text: string, patterns: readonly RegExp[]): boolean {
+  return patterns.some((pattern) => testPattern(pattern, text));
 }
 
-function normalizeForMatch(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/ё/g, "е")
-    .replace(/[^a-zа-я0-9]+/gi, " ")
-    .replace(/\\s+/g, " ")
-    .trim();
-}
+const LEARNING_PATTERNS = [
+  /\bcorporate learning\b/,
+  /\bworkplace learning\b/,
+  /\blearning and development\b/,
+  /\bl&d\b/,
+  /\blearning technology\b/,
+  /\blearning platform\b/,
+  /\bemployee development\b/,
+  /\bprofessional development\b/,
+  /\bupskilling\b/,
+  /\breskilling\b/,
+  /\blifelong learning\b/,
+  /\btraining\b/,
+  /\blearning\b/,
+  /\bобучен/,
+  /\bразвития сотрудник/,
+  /\bразвити[ея] персонал/,
+  /\bкорпоративн.*обучен/,
+  /\bобучен.*сотрудник/,
+  /\bпереобучен/,
+  /\bповышен.*квалификац/,
+  /\bдополнительн.*образован/,
+  /\bl&d\b/,
+] as const;
 
-function isClearlyAdjacentNonAiContent(title: string): boolean {
-  const normalizedTitle = normalizeForMatch(title);
+const AI_PATTERNS = [
+  /\bartificial intelligence\b/,
+  /\bgenerative ai\b/,
+  /\bgenai\b/,
+  /\bai agent(s)?\b/,
+  /\bagentic\b/,
+  /\blarge language model(s)?\b/,
+  /\bllm(s)?\b/,
+  /\bfoundation model(s)?\b/,
+  /\bmultimodal\b/,
+  /\bmachine learning\b/,
+  /\bneural network(s)?\b/,
+  /\bneural network\b/,
+  /\bclaude\b/,
+  /\bgemini\b/,
+  /\bgpt(?:-\d+(?:\.\d+)?)?\b/,
+  /\bopenai\b/,
+  /\banthropic\b/,
+  /\bdeepmind\b/,
+  /\bmidjourney\b/,
+  /\bнейросет/,
+  /\bискусственн.*интеллект/,
+  /\bгенеративн.*ии/,
+  /\bгенеративн.*интеллект/,
+  /\bмашинн.*обучен/,
+] as const;
 
-  const patterns = [
-    /\bdevfest\b/,
-    /\bastronaut\b/,
-    /\bspace\b.*\bdiscovery\b/,
-    /\bfootball\b/,
-    /\bnext big race\b/,
-    /\bhome decor\b/,
-    /\b70-year love story\b/,
-  ];
+const FINANCE_PATTERNS = [
+  /\bbank(s|ing)?\b/,
+  /\bfintech\b/,
+  /\bfinancial (?:service|services|product|products|sector|market)\b/,
+  /\bpayment(s)?\b/,
+  /\bpaytech\b/,
+  /\bdigital ruble\b/,
+  /\bdigital finance\b/,
+  /\bcentral bank\b/,
+  /\bcredit\b/,
+  /\blending\b/,
+  /\bmortgage\b/,
+  /\bкарты?\b/,
+  /\bбанк(и|ов|ами|ах|овский|овская)?\b/,
+  /\bбанковск/,
+  /\bфинтех/,
+  /\bфинансов(ый|ая|ое|ые|ых|ого|ому|ом)?\b/,
+  /\bплатеж/,
+  /\bэквайр/,
+  /\bцифров(ой|ого) рубл/,
+  /\bкредит/,
+  /\bипотек/,
+] as const;
 
-  return patterns.some((pattern) => pattern.test(normalizedTitle));
-}
+const BANK_PRACTICE_PATTERNS = [
+  /\bemployee(s)?\b/,
+  /\bworkforce\b/,
+  /\bhr\b/,
+  /\bhuman resources\b/,
+  /\btalent\b/,
+  /\bmanager(s)?\b/,
+  /\bleadership\b/,
+  /\btraining\b/,
+  /\blearning\b/,
+  /\bautomation\b/,
+  /\bworkflow\b/,
+  /\bprocess(es)?\b/,
+  /\bcompetenc(y|ies)\b/,
+  /\bskills?\b/,
+  /\bсотрудник/,
+  /\bперсонал/,
+  /\bкадр/,
+  /\bталант/,
+  /\bлидерств/,
+  /\bкомпетенц/,
+  /\bнавык/,
+  /\bавтоматизац/,
+  /\bпроцесс/,
+  /\bобучен/,
+  /\bуправлен/,
+] as const;
+
+const FUTURE_SKILLS_PATTERNS = [
+  /\bfuture skills\b/,
+  /\bskills of the future\b/,
+  /\bworkforce skills\b/,
+  /\bskill(s)? gap\b/,
+  /\bskills? shortage\b/,
+  /\bjob(s)? of the future\b/,
+  /\bfuture of work\b/,
+  /\blabor market\b/,
+  /\bworkplace\b/,
+  /\boccupations?\b/,
+  /\bcompetenc(y|ies)\b/,
+  /\bпрофесс/,
+  /\bнавык/,
+  /\bкомпетенц/,
+  /\bрынок труда\b/,
+  /\bзанятост/,
+  /\bпрофесси(я|и|й|ям|ях)\b/,
+  /\bкадр(ы|ов|ами|ах)?\b/,
+  /\bбудущ.*работ/,
+] as const;
 
 function isRelevantCandidate(
   title: string,
   description = "",
   sourceSlug?: string,
 ): boolean {
-  if (isInfrastructureCandidate(title)) {
-    return false;
-  }
+  const text = normalizeForMatch(`${title} ${description}`);
 
   if (isPromotionalCandidate(title)) {
     return false;
   }
 
-  if (isClearlyAdjacentNonAiContent(title)) {
-    return false;
+  const source = sourceSlug ? getSourceConfig(sourceSlug) : undefined;
+  const focus = source?.focus ?? [];
+
+  if (focus.includes("ai")) {
+    return hasAnySignal(text, AI_PATTERNS);
   }
 
-  // Specialized AI feeds are editorially relevant by default. They can
-  // contain adjacent stories, so only a small set of clearly unrelated
-  // headlines is excluded here. Relevance is then refined by the topic
-  // classifier using the article text.
-  if (sourceSlug && isAiFocusedSource(sourceSlug)) {
-    return true;
+  if (focus.includes("learning")) {
+    return hasAnySignal(text, LEARNING_PATTERNS);
   }
 
-  return hasAiSignal(title, description);
+  if (focus.includes("finance")) {
+    return hasAnySignal(text, FINANCE_PATTERNS);
+  }
+
+  if (focus.includes("future-skills")) {
+    return hasAnySignal(text, FUTURE_SKILLS_PATTERNS);
+  }
+
+  if (focus.includes("bank-practice")) {
+    return (
+      hasAnySignal(text, FINANCE_PATTERNS) &&
+      hasAnySignal(text, BANK_PRACTICE_PATTERNS)
+    );
+  }
+
+  return (
+    hasAnySignal(text, LEARNING_PATTERNS) ||
+    hasAnySignal(text, AI_PATTERNS) ||
+    hasAnySignal(text, FINANCE_PATTERNS) ||
+    hasAnySignal(text, FUTURE_SKILLS_PATTERNS)
+  );
 }
 
 function isFresh(
@@ -422,52 +432,79 @@ function isFresh(
   return publishedDate >= cutoff;
 }
 
-async function collectSource(
+function extractDateFromElement($: any, element: any): string | null {
+  const dateSelectors = [
+    "pubDate",
+    "published",
+    "updated",
+    "time",
+    "meta[property='article:published_time']",
+    "meta[name='date']",
+    "meta[itemprop='datePublished']",
+  ];
+
+  for (const selector of dateSelectors) {
+    const node = $(element).find(selector).first();
+    const value = node.attr("datetime") ?? node.attr("content") ?? node.text();
+    if (value && !Number.isNaN(new Date(value.trim()).getTime())) {
+      return value.trim();
+    }
+  }
+
+  return null;
+}
+
+function shouldSkipCbrRssUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.hostname.endsWith("cbr.ru")) return false;
+    const path = parsed.pathname.toLowerCase();
+    const blockedPrefixes = [
+      "/queries/",
+      "/registries/",
+      "/rbr/",
+      "/hd_base/",
+      "/dkp/",
+      "/statistics/",
+      "/project_na/",
+      "/finorg/",
+      "/cash_circulation/",
+      "/ec_research/",
+      "/about_br/publ/",
+    ];
+    return blockedPrefixes.some((prefix) => path.startsWith(prefix));
+  } catch {
+    return false;
+  }
+}
+
+async function collectRssSource(
   source: SourceConfig,
 ): Promise<Candidate[]> {
-  console.log("");
-  console.log(`--- SOURCE: ${source.name} ---`);
-  console.log(`RSS: ${source.url}`);
-
   const xml = await fetchFeed(source.url);
-
   const { load } = await import("cheerio");
   const $ = load(xml, { xmlMode: true });
-
   const candidates: Candidate[] = [];
   const seen = new Set<string>();
+  let feedItemsSeen = 0;
+  let feedItemsWithUrl = 0;
+  let feedItemsRejectedByRelevance = 0;
 
   $("item, entry").each((_, element) => {
-    const title = cleanXmlText(
-      $(element).find("title").first().text(),
-    );
-
-    if (title.length < 10) {
-      return;
-    }
+    feedItemsSeen++;
+    const title = cleanXmlText($(element).find("title").first().text());
+    if (title.length < 10) return;
 
     const linkElement = $(element).find("link").first();
-
     let rawUrl = linkElement.attr("href") ?? null;
-
-    if (!rawUrl) {
-      rawUrl = linkElement.text().trim() || null;
-    }
-
-    if (!rawUrl) {
-      rawUrl =
-        $(element).find("guid").first().text().trim() || null;
-    }
-
-    if (!rawUrl) {
-      return;
-    }
+    if (!rawUrl) rawUrl = linkElement.text().trim() || null;
+    if (!rawUrl) rawUrl = $(element).find("guid").first().text().trim() || null;
+    if (!rawUrl) return;
+    feedItemsWithUrl++;
 
     const url = normalizeUrl(rawUrl, source.url);
-
-    if (seen.has(url)) {
-      return;
-    }
+    if (source.slug.startsWith("cbr-") && shouldSkipCbrRssUrl(url)) return;
+    if (seen.has(url)) return;
 
     const publishedAt =
       $(element).find("pubDate").first().text().trim() ||
@@ -483,20 +520,116 @@ async function collectSource(
     );
 
     if (!isRelevantCandidate(title, description, source.slug)) {
-      const reason = isInfrastructureCandidate(title)
-        ? "infrastructure"
-        : isPromotionalCandidate(title)
-          ? "promotional"
-          : "relevance";
-
-      console.log(
-        `RSS candidate excluded by ${reason} rule: ${title}`,
-      );
+      feedItemsRejectedByRelevance++;
       return;
     }
 
     seen.add(url);
+    candidates.push({ sourceSlug: source.slug, title, url, publishedAt, description });
+  });
 
+  console.log(`RSS diagnostics: items=${feedItemsSeen}, withUrl=${feedItemsWithUrl}, rejectedByRelevance=${feedItemsRejectedByRelevance}, accepted=${candidates.length}`);
+  return candidates;
+}
+
+
+function cleanWorkLearningTitle(title: string): string {
+  return cleanTitle(title)
+    .replace(/^(?:\w{3}\s+\d{1,2},\s+\d{4}\s*[•·]\s*)?/i, "")
+    .replace(/^\d{1,2}\s+min read/i, "")
+    .replace(/Part of\s+the WorkLearning\.ai Series\s*\|.*$/i, "")
+    .replace(/\bRK\s*Prasad\s*$/i, "")
+    .replace(/\bRKPrasad\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const htmlPageCache = new Map<string, string>();
+const articleCache = new Map<string, ExtractedArticle>();
+
+async function collectHtmlSource(
+  source: SourceConfig,
+): Promise<Candidate[]> {
+  let html = htmlPageCache.get(source.url);
+
+  if (html) {
+    console.log(`HTML cache hit: ${source.url}`);
+  } else {
+    html = await fetchFeed(source.url, "HTML");
+    htmlPageCache.set(source.url, html);
+  }
+  const { load } = await import("cheerio");
+  const $ = load(html);
+  const candidates: Candidate[] = [];
+  const seen = new Set<string>();
+  let htmlLinksSeen = 0;
+  let htmlLinksWithLongText = 0;
+  let htmlRejectedByRelevance = 0;
+  const base = new URL(source.url);
+  const host = base.hostname.replace(/^www\./, "");
+  const sourcePath = base.pathname.replace(/\/$/, "") || "/";
+  const pathPrefixes = source.htmlPathPrefixes ?? [];
+
+  const isArticleUrl = (parsed: URL): boolean => {
+    if (parsed.hostname.replace(/^www\./, "") !== host) return false;
+    if (!/^https?:$/.test(parsed.protocol)) return false;
+
+    const pathname = parsed.pathname.toLowerCase();
+    const normalizedPath = pathname.replace(/\/$/, "") || "/";
+    if (normalizedPath === sourcePath.toLowerCase()) return false;
+    if (pathPrefixes.length && !pathPrefixes.some((prefix) => pathname.startsWith(prefix.toLowerCase()))) {
+      return false;
+    }
+
+    if (source.slug === "banki-news") {
+      return pathname === "/news/lenta/" && parsed.searchParams.has("id");
+    }
+
+    // Generic article heuristics remain as a fallback for sources without a path map.
+    if (!pathPrefixes.length) {
+      return (
+        pathname.includes("/article") ||
+        pathname.includes("/news/") ||
+        pathname.includes("/trends/") ||
+        pathname.includes("/tech/") ||
+        pathname.includes("/economy/") ||
+        pathname.includes("/education/") ||
+        pathname.includes("/ai/") ||
+        pathname.includes("/articles/") ||
+        /\d{5,}/.test(pathname)
+      );
+    }
+
+    return true;
+  };
+
+  const addCandidate = (titleRaw: string, rawUrl: string | undefined, descriptionRaw = "", publishedAt: string | null = null) => {
+    const title = source.slug === "worklearning-ai"
+      ? cleanWorkLearningTitle(titleRaw)
+      : cleanTitle(titleRaw);
+    if (title.length < 20 || title.length > 300) return;
+    htmlLinksWithLongText++;
+    if (!rawUrl) return;
+
+    let parsed: URL;
+    try {
+      parsed = new URL(rawUrl, source.url);
+    } catch {
+      return;
+    }
+
+    if (!isArticleUrl(parsed)) return;
+
+    const url = normalizeUrl(parsed.toString(), source.url);
+    if (seen.has(url)) return;
+
+    const description = cleanTitle(descriptionRaw);
+    if (!isRelevantCandidate(title, description, source.slug)) {
+      htmlRejectedByRelevance++;
+      return;
+    }
+
+    seen.add(url);
     candidates.push({
       sourceSlug: source.slug,
       title,
@@ -504,218 +637,177 @@ async function collectSource(
       publishedAt,
       description,
     });
+  };
+
+  // 1. Prefer semantic article/card containers. The anchor text is the primary title source.
+  $("article, [itemtype*='Article'], [class*='article'], [class*='Article'], [class*='card'], [class*='Card']").each((_, element) => {
+    const container = $(element);
+    const link = container.find("a[href]").first();
+    if (!link.length) return;
+
+    const anchorTitle = cleanTitle(link.text());
+    const heading = container.find("h1, h2, h3, h4, [itemprop='headline'], [class*='title'], [class*='Title']").first();
+    const headingTitle = cleanTitle(heading.text());
+    const ariaTitle = cleanTitle(link.attr("aria-label") || "");
+    const title = anchorTitle.length >= 20 ? anchorTitle : headingTitle.length >= 20 ? headingTitle : ariaTitle;
+    const description = cleanTitle(container.find("p, [itemprop='description'], [class*='excerpt'], [class*='summary'], [class*='description']").first().text());
+    const publishedAt = extractDateFromElement($, element);
+    addCandidate(title, link.attr("href"), description, publishedAt);
   });
 
-  console.log(`RSS entries found: ${candidates.length}`);
+  // 2. JSON-LD ItemList / Article data is common on modern editorial sites.
+  $("script[type='application/ld+json']").each((_, element) => {
+    const raw = $(element).html();
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      const visit = (value: any) => {
+        if (!value || typeof value !== "object") return;
+        if (Array.isArray(value)) {
+          for (const item of value) visit(item);
+          return;
+        }
+        if (Array.isArray(value.itemListElement)) {
+          for (const item of value.itemListElement) visit(item);
+        }
+        const item = value.item ?? value;
+        if (item && typeof item === "object") {
+          const title = item.headline ?? item.name;
+          const url = item.url ?? item.mainEntityOfPage?.['@id'];
+          const description = item.description ?? "";
+          const publishedAt = item.datePublished ?? item.dateModified ?? null;
+          if (title && url) addCandidate(String(title), String(url), String(description), publishedAt ? String(publishedAt) : null);
+        }
+      };
+      visit(parsed);
+    } catch {
+      // Some publishers embed JSON-LD with HTML entities or non-standard JSON.
+    }
+  });
+
+  // 3. Final fallback: ordinary links, using the anchor text before any parent heading.
+  $("a[href]").each((_, element) => {
+    htmlLinksSeen++;
+    const anchor = $(element);
+    const container = anchor.closest("article, li, div").first();
+    const anchorTitle = cleanTitle(anchor.text());
+    const heading = container.find("h1, h2, h3, h4").first();
+    const headingTitle = cleanTitle(heading.text());
+    const ariaTitle = cleanTitle(anchor.attr("aria-label") || "");
+    const title = anchorTitle.length >= 20 ? anchorTitle : headingTitle.length >= 20 ? headingTitle : ariaTitle;
+    const description = cleanTitle(container.find("p").first().text());
+    const publishedAt = extractDateFromElement($, container);
+    addCandidate(title, anchor.attr("href"), description, publishedAt);
+  });
+
+  const limitedCandidates = candidates.slice(0, source.maxHtmlCandidates ?? 30);
+  console.log(`HTML diagnostics: links=${htmlLinksSeen}, candidateTitles=${htmlLinksWithLongText}, rejectedByRelevance=${htmlRejectedByRelevance}, accepted=${limitedCandidates.length}`);
+  return limitedCandidates;
+}
+
+async function collectSource(
+  source: SourceConfig,
+): Promise<Candidate[]> {
+  console.log("");
+  console.log(`--- SOURCE: ${source.name} ---`);
+
+  // RBC blocks direct requests to the Education section with HTTP 406.
+  // The Neural Network listing is accessible and already contains links to
+  // /trends/education/ articles. Reuse the same cached HTML instead of
+  // requesting the RBC listing page a second time.
+  if (source.slug === "rbc-education-ai") {
+    const neuralSource = SOURCES.find(
+      (item) => item.slug === "rbc-neural-network",
+    );
+
+    if (!neuralSource) {
+      throw new Error(
+        "RBC education fallback requires rbc-neural-network source configuration.",
+      );
+    }
+
+    console.log(
+      `RBC education fallback: reusing ${neuralSource.url}`,
+    );
+
+    const neuralCandidates = await collectHtmlSource(neuralSource);
+
+    const educationCandidates = neuralCandidates
+      .filter((candidate) => {
+        try {
+          return new URL(candidate.url).pathname
+            .toLowerCase()
+            .startsWith("/trends/education/");
+        } catch {
+          return false;
+        }
+      })
+      .map((candidate) => ({
+        ...candidate,
+        sourceSlug: source.slug,
+      }));
+
+    console.log(
+      `RBC education fallback diagnostics: educationCandidates=${educationCandidates.length}`,
+    );
+
+    return educationCandidates;
+  }
+
+  console.log(`URL: ${source.url}`);
+
+  const candidates = source.collectionType === "HTML"
+    ? await collectHtmlSource(source)
+    : await collectRssSource(source);
 
   return candidates;
 }
 
 const TOPIC_DEFINITIONS = [
   {
-    slug: "ai-tech",
-    name: "AI и технологии",
+    slug: "learning-trends",
+    name: "Тренды обучения",
     description:
-      "Новые модели, AI-агенты, продукты, инструменты, робототехника и практическое применение ИИ.",
+      "Изменения в корпоративном обучении, L&D, learning technology, форматах и подходах к развитию сотрудников.",
     sortOrder: 1,
-    patterns: [
-      /\bai[- ]agent(s)?\b/,
-      /\bagentic\b/,
-      /\bautonomous agent(s)?\b/,
-      /\bllm(s)?\b/,
-      /\blarge language model(s)?\b/,
-      /\bfoundation model(s)?\b/,
-      /\bmultimodal\b/,
-      /\bnew model(s)?\b/,
-      /\bmodel(s)?\s+(?:release|launch|update|training)\b/,
-      /\bchatbot(s)?\b/,
-      /\brobot(s|ics)?\b/,
-      /\bhumanoid(s)?\b/,
-      /\bcomputer vision\b/,
-      /\bgenerative ai\b/,
-      /\bgenai\b/,
-      /\bsynthetic (?:media|content|data)\b/,
-      /\bгенеративн/,
-      /\bискусственн.*интеллект/,
-      /\bнейросет/,
-      /\bмультимодальн/,
-      /\bробот(ы|а|ов|ам|ами|ах)?\b/,
-      /\bавтономн.*(агент|систем|робот|ии)/,
-      /\bclaude\b/,
-      /\bgemini\b/,
-      /\bgpt(?:-\d+(?:\.\d+)?)?\b/,
-      /\bopenai\b/,
-      /\banthropic\b/,
-      /\bdeepmind\b/,
-      /\bmistral\b/,
-      /\bhugging face\b/,
-    ],
   },
   {
-    slug: "products-tools",
-    name: "Продукты и инструменты",
+    slug: "ai",
+    name: "ИИ",
     description:
-      "AI-сервисы и инструменты, новые функции, режимы, интеграции и практические возможности.",
+      "Новые модели, агенты, AI-продукты, исследования, применение ИИ и влияние ИИ на работу и бизнес.",
     sortOrder: 2,
-    patterns: [
-      /\bai (?:tool|tools|service|services|app|apps|assistant|assistants)\b/,
-      /\bai[- ]powered (?:tool|tools|service|app|apps|assistant|software)\b/,
-      /\b(?:tool|service|app|assistant|software|platform)\b.*\b(?:feature|features|mode|modes|capabilit(?:y|ies)|update|updates)\b/,
-      /\b(?:feature|features|mode|modes|capabilit(?:y|ies)|update|updates)\b.*\b(?:tool|service|app|assistant|software|platform)\b/,
-      /\bplugin(s)?\b/,
-      /\bextension(s)?\b/,
-      /\bcopilot\b/,
-      /\bworkspace\b/,
-      /\bgenerator(s)?\b/,
-      /\beditor\b.*\bai\b/,
-      /\bфункци[яи]\b.*\b(?:сервис|инструмент|продукт|приложен)/,
-      /\b(?:сервис|инструмент|продукт|приложен)\w*\b.*\bфункци[яи]\b/,
-      /\bвозможност[ьи]\b.*\b(?:сервис|инструмент|продукт|приложен)/,
-      /\bновый режим\b/,
-      /\bрежим\b.*\b(?:сервис|инструмент|продукт|приложен)/,
-      /\bплагин/,
-      /\bрасширени[ея]/,
-      /\bассистент\w*\b.*\b(?:функци|возможност|режим)/,
-    ],
   },
   {
-    slug: "business-innovation",
-    name: "Бизнес и инновации",
+    slug: "finance-russia",
+    name: "Финансовый сектор РФ",
     description:
-      "Компании, стартапы, инвестиции, сделки, рынок, продукты как бизнес и внедрение ИИ.",
+      "Банки, финтех, платежи, финансовые продукты, банковские технологии и регулирование финансового сектора России.",
     sortOrder: 3,
-    patterns: [
-      /\bstartup(s)?\b/,
-      /\bfounder(s)?\b/,
-      /\braises?\b/,
-      /\braised\b/,
-      /\bfunding\b/,
-      /\binvestment(s)?\b/,
-      /\binvestor(s)?\b/,
-      /\bventure capital\b/,
-      /\bvaluation\b/,
-      /\bacqui(red|sition)\b/,
-      /\bmerger\b/,
-      /\bpartnership\b/,
-      /\bdeal(s)?\b/,
-      /\brevenue\b/,
-      /\bmarket\b/,
-      /\bcustomer(s)?\b/,
-      /\benterprise\b/,
-      /\bbusiness\b/,
-      /\bcompany\b/,
-      /\bcompanies\b/,
-      /\bcommercial\b/,
-      /\bcorporate\b/,
-      /\bпродаж/,
-      /\bвыручк/,
-      /\bстартап/,
-      /\bинвестици/,
-      /\bфинансирован/,
-      /\bкомпани/,
-      /\bбизнес/,
-      /\bрынок/,
-      /\bпартнерств/,
-      /\bсделк/,
-    ],
   },
   {
-    slug: "research",
-    name: "Исследования",
+    slug: "future-skills",
+    name: "Навыки будущего",
     description:
-      "Научные исследования, эксперименты, новые методы, оценки моделей и научные результаты.",
+      "Навыки, компетенции, профессии, рынок труда и изменения требований к специалистам.",
     sortOrder: 4,
-    patterns: [
-      /\bresearcher(s)?\b/,
-      /\bresearch\b/,
-      /\bstudy\b/,
-      /\bstudies\b/,
-      /\bpaper\b/,
-      /\bscientific\b/,
-      /\bexperiment(s)?\b/,
-      /\bfindings?\b/,
-      /\bmethod(s|ology)?\b/,
-      /\bbenchmark(s)?\b/,
-      /\bevaluation\b/,
-      /\bdataset(s)?\b/,
-      /\barxiv\b/,
-      /\bpeer[- ]reviewed\b/,
-      /\bscientist(s)?\b/,
-      /\bmathematician(s)?\b/,
-      /\bconjecture\b/,
-      /\bисследован/,
-      /\bуч[её]н/,
-      /\bнаучн/,
-      /\bэксперимент/,
-      /\bметод/,
-      /\bвыборк/,
-      /\bрезультат.*исслед/,
-      /\bтестирован/,
-      /\bбенчмарк/,
-    ],
   },
   {
-    slug: "other",
-    name: "Другое",
+    slug: "bank-practice",
+    name: "Практика банков",
     description:
-      "Релевантные материалы об ИИ и технологиях, которые не относятся однозначно к основным рубрикам.",
+      "Практика банков как организаций и работодателей: сотрудники, обучение, HR, автоматизация, компетенции и организационные изменения.",
     sortOrder: 5,
-    patterns: [
-      /\belection(s)?\b/,
-      /\bsenate\b/,
-      /\bcongress\b/,
-      /\bpolitic(s|al)?\b/,
-      /\bcampaign\b/,
-      /\bgovernment\b/,
-      /\bregulation\b/,
-      /\bregulat(ory|ion)\b/,
-      /\blaw(s)?\b/,
-      /\blegislation\b/,
-      /\bpolicy\b/,
-      /\brules?\b/,
-      /\bcopyright\b/,
-      /\bcourt\b/,
-      /\bantitrust\b/,
-      /\bsafety\b/,
-      /\bexistential risk\b/,
-      /\bsociet(y|al)\b/,
-      /\bculture\b/,
-      /\bjobs?\b/,
-      /\blabor\b/,
-      /\bworkforce\b/,
-      /\bвыбор/,
-      /\bсенат/,
-      /\bконгресс/,
-      /\bполит/,
-      /\bправительств/,
-      /\bрегулирован/,
-      /\bзакон/,
-      /\bзаконодательств/,
-      /\bправил/,
-      /\bавторск/,
-      /\bсуд/,
-      /\bантимонополь/,
-      /\bбезопасност/,
-      /\bобществен/,
-      /\bкультур/,
-      /\bработ/,
-      /\bзанятост/,
-    ],
   },
 ] as const;
 
 type TopicDefinition = (typeof TOPIC_DEFINITIONS)[number];
 
-function countTopicMatches(text: string, patterns: readonly RegExp[]): number {
-  let matches = 0;
-
-  for (const pattern of patterns) {
-    if (pattern.test(text)) {
-      matches++;
-    }
-  }
-
-  return matches;
+function countMatches(text: string, patterns: readonly RegExp[]): number {
+  return patterns.reduce(
+    (total, pattern) => total + (testPattern(pattern, text) ? 1 : 0),
+    0,
+  );
 }
 
 function classifyArticleTopic(
@@ -723,190 +815,67 @@ function classifyArticleTopic(
   content: string,
   sourceSlug: string,
 ): { topic: TopicDefinition; confidence: number } {
-  const normalizedTitle = normalizeForMatch(title);
-  const normalizedContent = normalizeForMatch(content);
-  const normalizedText = `${normalizedTitle} ${normalizedContent.slice(0, 8000)}`;
+  const text = normalizeForMatch(`${title} ${content.slice(0, 16000)}`);
+  const titleText = normalizeForMatch(title);
+  const source = getSourceConfig(sourceSlug);
+  const focus = source?.focus ?? [];
 
-  const count = (patterns: readonly RegExp[], value: string) =>
-    patterns.reduce(
-      (total, pattern) => total + (pattern.test(value) ? 1 : 0),
-      0,
-    );
+  const ai = countMatches(text, AI_PATTERNS);
+  const learning = countMatches(text, LEARNING_PATTERNS);
+  const finance = countMatches(text, FINANCE_PATTERNS);
+  const bankPractice = countMatches(text, BANK_PRACTICE_PATTERNS);
+  const futureSkills = countMatches(text, FUTURE_SKILLS_PATTERNS);
 
-  /*
-   * Editorial classification priority:
-   * 1. Explicit model-misalignment incidents -> Other.
-   * 2. Product/tool/service stories -> Products & tools.
-   * 3. Concrete commercial/company stories -> Business & innovation.
-   * 4. Research/scientific results -> Research.
-   * 5. Regulation, law, society, military, safety and public debate -> Other.
-   * 6. AI models, agents and applications -> AI & technology.
-   */
+  const titleAi = countMatches(titleText, AI_PATTERNS);
+  const titleLearning = countMatches(titleText, LEARNING_PATTERNS);
+  const titleFinance = countMatches(titleText, FINANCE_PATTERNS);
+  const titleBank = countMatches(titleText, BANK_PRACTICE_PATTERNS);
+  const titleSkills = countMatches(titleText, FUTURE_SKILLS_PATTERNS);
 
-  const researchTitlePatterns = [
-    /\bresearchers?\b/, /\bresearch\b/, /\bstud(y|ies)\b/,
-    /\bpaper\b/, /\bscientists?\b/, /\bmathematicians?\b/,
-    /\bexperiment(s)?\b/, /\bfindings?\b/, /\bbenchmark(s)?\b/,
-    /\bevaluation\b/, /\bconjecture\b/, /\barxiv\b/,
-    /\bpeer[- ]reviewed\b/, /\bscientific\b/, /\bnew method(s)?\b/,
-    /\bmethodology\b/, /\bматематик/, /\bисследован/, /\bуч[её]н/,
-    /\bнаучн/, /\bэксперимент/, /\bбенчмарк/, /\bтестирован/,
-    /\bгипотез/, /\bтеорем/,
-  ];
-
-  const productTitlePatterns = [
-    /\bai (?:tool|tools|service|services|app|apps|assistant|assistants)\b/,
-    /\bai[- ]powered (?:tool|tools|service|app|apps|assistant|software)\b/,
-    /\bplugin(s)?\b/,
-    /\bextension(s)?\b/,
-    /\bcopilot\b/,
-    /\bworkspace\b/,
-    /\bgenerator(s)?\b/,
-    /\bfeature(s)?\b.*\b(?:ai|claude|gemini|gpt|openai|anthropic)\b/,
-    /\b(?:ai|claude|gemini|gpt|openai|anthropic)\b.*\bfeature(s)?\b/,
-    /\bnew mode\b/,
-    /\bmode\b.*\b(?:ai|claude|gemini|gpt|openai|anthropic)\b/,
-    /\b(?:tool|service|app|assistant|software|platform)\b.*\b(?:capabilit(?:y|ies)|feature|mode|update)\b/,
-    /\b(?:capabilit(?:y|ies)|feature|mode|update)\b.*\b(?:tool|service|app|assistant|software|platform)\b/,
-    /\bфункци[яи]\b.*\b(?:сервис|инструмент|продукт|приложен)/,
-    /\b(?:сервис|инструмент|продукт|приложен)\w*\b.*\bфункци[яи]\b/,
-    /\bвозможност[ьи]\b.*\b(?:сервис|инструмент|продукт|приложен)/,
-    /\bновый режим\b/,
-    /\bрежим\b.*\b(?:сервис|инструмент|продукт|приложен)/,
-    /\bплагин/,
-    /\bрасширени[ея]/,
-  ];
-
-  const businessTitlePatterns = [
-    /\bstartup(s)?\b/, /\bfounder(s)?\b/, /\braises?\b/, /\braised\b/,
-    /\bfunding\b/, /\binvestment(s)?\b/, /\binvestor(s)?\b/,
-    /\bventure capital\b/, /\bvaluation\b/, /\bacqui(red|sition)\b/,
-    /\bmerger\b/, /\bpartnership\b/, /\bpartner(?:s|ed|ing)?\b/,
-    /\bdeal(s)?\b/, /\brevenue\b/, /\bfinancial consumer\b/,
-    /\blegal market\b/, /\bcommercial market\b/,
-    /\bmonetiz/, /\bpricing\b/, /\bcost-cutting\b/,
-    /\bai\s*&\s*economy\b/,
-    /\bjoin(?:s|ed|ing)?\b.*\b(?:team|company|firm|organization)\b/,
-    /\b(?:team|company|firm|organization)\b.*\bjoin(?:s|ed|ing)?\b/,
-    /\blaunch(?:es|ed|ing)?\b.*\b(?:product|service|platform)\b.*\b(?:market|customer|business|enterprise|commercial)\b/,
-    /\b(?:product|service|platform)\b.*\blaunch(?:es|ed|ing)?\b.*\b(?:market|customer|business|enterprise|commercial)\b/,
-    /\bnew .*product\b.*\b(?:market|customer|business|enterprise|commercial)\b/,
-    /\bnew .*service\b.*\b(?:market|customer|business|enterprise|commercial)\b/,
-    /\bпродаж/, /\bвыручк/, /\bстартап/, /\bинвестици/,
-    /\bфинансирован/, /\bпартнерств/, /\bсделк/, /\bрынок/,
-    /\bкоммерчес/,
-  ];
-
-  const otherTitlePatterns = [
-    /\bai safety\b/, /\bsafety debate\b/,
-    /\bai superintelligence slowdown\b/, /\bai slowdown\b/,
-    /\bmisalign(?:ed|ment)\b/, /\brogue ai\b/,
-    /\bharmful prompts?\b/, /\badversarial\b/, /\bwatermark(?:ing)?\b/,
-    /\bregulat(?:e|es|ed|ion|ing)\b/, /\bgovernment(?:s)?\b/,
-    /\bpolicy\b/, /\blaw\b/, /\blegal\b/, /\bcourt\b/, /\bantitrust\b/,
-    /\bnuclear\b/, /\bbioweapon(?:s)?\b/, /\bmilitary\b/,
-    /\bbattlefield\b/, /\bdrone(?:s)?\b/, /\bjobs?\b/, /\blabor\b/,
-    /\bworkforce\b/, /\bcopyright\b/, /\bfair use\b/,
-    /\bsociet(?:y|al)\b/, /\bexistential risk\b/, /\bai doom\b/,
-    /\bapocalypse\b/, /\bsenate\b/, /\belection\b/,
-    /\bpolitic(?:s|al)\b/, /\bking of england\b/,
-    /\bpublic (?:opinion|debate|reaction)\b/,
-    /\bair traffic\b/, /\bfaa\b/,
-    /\bagi debate\b/, /\bwiden the agi debate\b/,
-    /\bchains? of thought\b/, /\btransparency\b/,
-    /\bclone teachers?\b/, /\bdigitally clone teachers?\b/,
-    /\bai threats?\b/, /\bthreats? are real\b/,
-    /\bai industry\b.*\bresearch\b.*\bpaused?\b/,
-    /\bfollowed its own research\b/,
-  ];
-
-  const explicitMisalignmentPatterns = [
-    /\bmodels?\b.*\b(?:hide|hiding|conceal|concealing)\b.*\b(?:behavior|behaviour)\b/,
-    /\b(?:hide|hiding|conceal|concealing)\b.*\b(?:bad behavior|bad behaviour)\b/,
-    /\b(?:leaving|left)\b.*\bnotes?\b.*\bsuccessor/,
-    /\bprompt injection\b/, /\bjailbreak(?:ed|ing|s)?\b/,
-    /\bmisalign(?:ed|ment)\b/, /\brogue ai\b/,
-    /\btried to jailbreak\b/, /\bjailbreak itself\b/,
-  ];
-
-  const productMatches = count(productTitlePatterns, normalizedText);
-  const researchMatches = count(researchTitlePatterns, normalizedTitle);
-  const businessMatches = count(businessTitlePatterns, normalizedTitle);
-  const otherMatches = count(otherTitlePatterns, normalizedTitle);
-  const misalignmentMatches = count(
-    explicitMisalignmentPatterns,
-    normalizedTitle,
-  );
-
-  // Explicit model-behavior incidents are Other.
-  if (misalignmentMatches > 0) {
-    return {
-      topic: TOPIC_DEFINITIONS[4],
-      confidence: 0.95,
-    };
+  // Source focus is a strong prior, but article content can override it when
+  // another topic is clearly dominant.
+  if (focus.includes("bank-practice") && titleBank + titleFinance >= 2 && bankPractice >= 2) {
+    return { topic: TOPIC_DEFINITIONS[4], confidence: 0.95 };
   }
 
-  // Product/tool stories get their own topic when the headline/body clearly
-  // describes an AI service, tool, feature, mode, integration or capability.
-  // Explicitly commercial stories remain Business & innovation.
-  if (productMatches > 0 && businessMatches === 0) {
-    return {
-      topic: TOPIC_DEFINITIONS[1],
-      confidence: productMatches >= 2 ? 0.95 : 0.9,
-    };
+  if (focus.includes("finance") && finance >= 2 && bankPractice < 2) {
+    return { topic: TOPIC_DEFINITIONS[2], confidence: 0.92 };
   }
 
-  // Concrete commercial/product stories take priority over generic legal or
-  // safety wording, but only when the headline clearly describes a business
-  // action, launch, market move or company activity.
-  if (businessMatches > 0) {
-    return {
-      topic: TOPIC_DEFINITIONS[2],
-      confidence: businessMatches >= 2 ? 0.95 : 0.9,
-    };
+  // AI is intentionally broad in this project. Learning-related AI stories
+  // remain AI unless the article is primarily about an internal bank practice.
+  if (ai >= 2 || titleAi > 0 || focus.includes("ai")) {
+    if (focus.includes("learning") && titleLearning > 0 && titleAi > 0) {
+      return { topic: TOPIC_DEFINITIONS[1], confidence: 0.95 };
+    }
+    return { topic: TOPIC_DEFINITIONS[1], confidence: titleAi > 0 ? 0.95 : 0.88 };
   }
 
-  // Research-led material remains Research even when the title also mentions
-  // existential risk or another consequence.
-  if (researchMatches > 0) {
-    return {
-      topic: TOPIC_DEFINITIONS[3],
-      confidence: researchMatches >= 2 ? 0.95 : 0.9,
-    };
+  if (focus.includes("learning") || learning >= 3 || titleLearning >= 1) {
+    return { topic: TOPIC_DEFINITIONS[0], confidence: titleLearning > 0 ? 0.94 : 0.85 };
   }
 
-  if (otherMatches > 0) {
-    return {
-      topic: TOPIC_DEFINITIONS[4],
-      confidence: otherMatches >= 2 ? 0.95 : 0.9,
-    };
+  if (futureSkills >= 2 || titleSkills > 0 || focus.includes("future-skills")) {
+    return { topic: TOPIC_DEFINITIONS[3], confidence: titleSkills > 0 ? 0.94 : 0.85 };
   }
 
-  const businessBodyPatterns = [
-    /\bpartnership\b/, /\bcommercial\b/, /\benterprise\b/,
-    /\bcustomer(?:s)?\b/, /\bpricing\b/, /\brevenue\b/,
-    /\bfundrais(?:e|es|ed|ing)\b/, /\binvest(?:s|ed|ment|ing)?\b/,
-    /\bacqui(?:re|res|red|sition)\b/,
-  ];
-
-  if (count(businessBodyPatterns, normalizedText) >= 2) {
-    return {
-      topic: TOPIC_DEFINITIONS[2],
-      confidence: 0.8,
-    };
+  if (bankPractice >= 2 && finance >= 2) {
+    return { topic: TOPIC_DEFINITIONS[4], confidence: 0.88 };
   }
 
-  if (isAiFocusedSource(sourceSlug)) {
-    return {
-      topic: TOPIC_DEFINITIONS[0],
-      confidence: 0.7,
-    };
+  if (finance >= 2 || titleFinance > 0 || focus.includes("finance")) {
+    return { topic: TOPIC_DEFINITIONS[2], confidence: titleFinance > 0 ? 0.9 : 0.8 };
   }
 
-  return {
-    topic: TOPIC_DEFINITIONS[4],
-    confidence: 0.7,
-  };
+  if (bankPractice >= 2 && finance > 0) {
+    return { topic: TOPIC_DEFINITIONS[4], confidence: 0.82 };
+  }
+
+  if (futureSkills > learning) {
+    return { topic: TOPIC_DEFINITIONS[3], confidence: 0.75 };
+  }
+
+  return { topic: TOPIC_DEFINITIONS[0], confidence: 0.65 };
 }
 
 async function ensureTopics(): Promise<void> {
@@ -997,44 +966,6 @@ async function assignPrimaryTopic(
   );
 }
 
-
-async function reclassifyDigestArticles(
-  digestId: string,
-): Promise<void> {
-  const digestArticles = await prisma.digestArticle.findMany({
-    where: {
-      digestId,
-    },
-    include: {
-      article: {
-        include: {
-          articleSources: {
-            include: {
-              source: true,
-            },
-            take: 1,
-          },
-        },
-      },
-    },
-  });
-
-  for (const item of digestArticles) {
-    const sourceSlug =
-      item.article.articleSources[0]?.source.slug;
-
-    if (!sourceSlug) {
-      continue;
-    }
-
-    await assignPrimaryTopic(
-      item.article.id,
-      item.article.title,
-      item.article.originalContent?.slice(0, 12000) ?? "",
-      sourceSlug,
-    );
-  }
-}
 
 async function getTodayDigest() {
   const issueDate = getMoscowDate();
@@ -1279,7 +1210,9 @@ async function processCandidate(params: {
     `RSS published: ${candidate.publishedAt ?? "not found"}`,
   );
 
-  if (!isFresh(candidate.publishedAt, cutoff)) {
+  const sourceIsHtml = sourceConfig.collectionType === "HTML";
+
+  if (!sourceIsHtml && !isFresh(candidate.publishedAt, cutoff)) {
     console.log(
       "Article skipped: RSS publication date is missing or older than 24 hours.",
     );
@@ -1303,31 +1236,45 @@ async function processCandidate(params: {
 
   let details: ExtractedArticle;
 
-  try {
-    details = await extractArticle(candidate.url);
-  } catch (error) {
+  const cachedArticle = articleCache.get(candidate.url);
+
+  if (cachedArticle) {
+    console.log(`Article cache hit: ${candidate.url}`);
+    details = cachedArticle;
+  } else {
+    try {
+      details = await extractArticle(candidate.url, candidate.title);
+      articleCache.set(candidate.url, details);
+    } catch (error) {
     console.error(
       `Article extraction failed: ${candidate.url}`,
     );
     console.error(error);
 
-    await createCollectionItem(
-      runId,
-      sourceFeed.id,
-      null,
-      "ERROR",
-      error instanceof Error
-        ? error.message
-        : String(error),
-    );
+      await createCollectionItem(
+        runId,
+        sourceFeed.id,
+        null,
+        "ERROR",
+        error instanceof Error
+          ? error.message
+          : String(error),
+      );
 
-    return {
-      fresh: false,
-      newArticle: false,
-      duplicate: false,
-      relevant: false,
-      error: true,
-    };
+      return {
+        fresh: false,
+        newArticle: false,
+        duplicate: false,
+        relevant: false,
+        error: true,
+      };
+    }
+  }
+
+  // Some homepage cards (notably WorkLearning.ai) concatenate metadata into the
+  // anchor text. The article extractor has the clean page title, so prefer it.
+  if (sourceConfig.slug === "worklearning-ai" && details.title) {
+    candidate.title = cleanWorkLearningTitle(details.title);
   }
 
   console.log(
@@ -1336,6 +1283,30 @@ async function processCandidate(params: {
   console.log(
     `Published in article: ${details.publishedAt ?? "not found"}`,
   );
+
+  const effectivePublishedAt = details.publishedAt ?? candidate.publishedAt;
+
+  if (sourceIsHtml && !isFresh(effectivePublishedAt, cutoff)) {
+    console.log(
+      "Article skipped: extracted publication date is missing or older than 24 hours.",
+    );
+
+    await createCollectionItem(
+      runId,
+      sourceFeed.id,
+      null,
+      "NOT_RELEVANT",
+      "HTML article is outside the 24-hour collection window or has no publication date.",
+    );
+
+    return {
+      fresh: false,
+      newArticle: false,
+      duplicate: false,
+      relevant: false,
+      error: false,
+    };
+  }
 
   const canonicalUrl = normalizeUrl(
     candidate.url,
@@ -1355,7 +1326,7 @@ async function processCandidate(params: {
     if (
       !isRelevantCandidate(
         existingArticle.title,
-        existingArticle.originalContent.slice(0, 12000),
+        (existingArticle.originalContent ?? "").slice(0, 12000),
         sourceConfig.slug,
       )
     ) {
@@ -1380,25 +1351,6 @@ async function processCandidate(params: {
       };
     }
 
-    if (
-      !existingArticle.imageUrl &&
-      (details.imageUrl || candidate.imageUrl)
-    ) {
-      await prisma.article.update({
-        where: {
-          id: existingArticle.id,
-        },
-        data: {
-          imageUrl:
-            details.imageUrl ?? candidate.imageUrl,
-        },
-      });
-
-      console.log(
-        "Preview image saved for existing article.",
-      );
-    }
-
     await saveAcceptedArticleSource(
       existingArticle.id,
       source.id,
@@ -1409,7 +1361,7 @@ async function processCandidate(params: {
     await assignPrimaryTopic(
       existingArticle.id,
       existingArticle.title,
-      existingArticle.originalContent.slice(0, 12000),
+      (existingArticle.originalContent ?? "").slice(0, 12000),
       source.slug,
     );
 
@@ -1458,14 +1410,12 @@ async function processCandidate(params: {
       url: candidate.url,
       canonicalUrl,
       author: details.author,
-      publishedAt: details.publishedAt
-        ? new Date(details.publishedAt)
-        : candidate.publishedAt
-          ? new Date(candidate.publishedAt)
-          : null,
+      publishedAt: effectivePublishedAt
+        ? new Date(effectivePublishedAt)
+        : null,
       language: sourceConfig.language,
       excerpt: null,
-      imageUrl: details.imageUrl ?? candidate.imageUrl,
+      imageUrl: null,
       contentHash,
       originalContent: details.text,
       status: "NEW",
@@ -1492,7 +1442,7 @@ async function processCandidate(params: {
         await translateAcceptedArticle(
           articleRecord.id,
           articleRecord.title,
-          articleRecord.originalContent,
+          articleRecord.originalContent ?? "",
         );
     } catch (error) {
       console.error(
@@ -1544,7 +1494,7 @@ async function processCandidate(params: {
   await assignPrimaryTopic(
     publishedArticle.id,
     publishedArticle.title,
-    publishedArticle.originalContent.slice(0, 12000),
+    (publishedArticle.originalContent ?? "").slice(0, 12000),
     source.slug,
   );
 
@@ -1580,7 +1530,7 @@ async function processCandidate(params: {
 }
 
 async function main() {
-  console.log("Starting RSS collection run...");
+  console.log("Starting collection run...");
 
   const run = await prisma.collectionRun.create({
     data: {
@@ -1602,6 +1552,7 @@ async function main() {
   let articlesDuplicate = 0;
   let articlesRelevant = 0;
   let errorCount = 0;
+  let unavailableSourceCount = 0;
 
   try {
     await ensureTopics();
@@ -1620,7 +1571,7 @@ async function main() {
 
     console.log("");
     console.log(
-      `Looking for RSS articles published since: ${cutoff.toISOString()}`,
+      `Looking for articles published since: ${cutoff.toISOString()}`,
     );
 
     for (const sourceConfig of SOURCES) {
@@ -1674,12 +1625,20 @@ async function main() {
           },
         });
       } catch (error) {
-        errorCount++;
+        const isUnavailable = isPermanentHttpError(error);
 
-        console.error(
-          `Failed to process source: ${sourceConfig.name}`,
-        );
-        console.error(error);
+        if (isUnavailable) {
+          unavailableSourceCount++;
+          console.warn(
+            `Source unavailable: ${sourceConfig.name}`,
+          );
+        } else {
+          errorCount++;
+          console.error(
+            `Failed to process source: ${sourceConfig.name}`,
+          );
+          console.error(error);
+        }
 
         try {
           const { sourceFeed } =
@@ -1704,8 +1663,6 @@ async function main() {
       }
     }
 
-    await reclassifyDigestArticles(digest.id);
-
     await prisma.collectionRun.update({
       where: { id: run.id },
       data: {
@@ -1722,7 +1679,7 @@ async function main() {
 
     console.log("");
     console.log("==============================");
-    console.log("RSS COLLECTION RUN COMPLETED");
+    console.log("COLLECTION RUN COMPLETED");
     console.log("==============================");
     console.log(`Run ID: ${run.id}`);
     console.log(`Digest ID: ${digest.id}`);
@@ -1733,6 +1690,7 @@ async function main() {
     console.log(
       `Articles accepted and added to digest: ${articlesRelevant}`,
     );
+    console.log(`Unavailable sources: ${unavailableSourceCount}`);
     console.log(`Errors: ${errorCount}`);
   } catch (error) {
     await prisma.collectionRun.update({

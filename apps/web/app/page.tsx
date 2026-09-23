@@ -1,28 +1,8 @@
-export const dynamic = "force-dynamic";
-
 import Link from "next/link";
 
 import { prisma } from "@learning-intelligence/database";
 
-function Arrow() {
-  return (
-    <svg
-      aria-hidden="true"
-      width="17"
-      height="17"
-      viewBox="0 0 24 24"
-      fill="none"
-    >
-      <path
-        d="M5 12h13M13 6l6 6-6 6"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
+export const dynamic = "force-dynamic";
 
 function formatDate(date: Date | null) {
   if (!date) return "";
@@ -44,28 +24,58 @@ function getTags(
   return tags.slice(0, 4).map((item) => item.tag.name);
 }
 
-const TOPICS = [
+const CATEGORIES = [
   {
-    slug: "ai-tech",
-    name: "AI и технологии",
+    slug: "learning-trends",
+    name: "Тренды обучения",
+    description:
+      "Корпоративное обучение, L&D, learning tech и новые подходы к развитию сотрудников.",
   },
   {
-    slug: "business-innovation",
-    name: "Бизнес и инновации",
+    slug: "ai",
+    name: "ИИ",
+    description:
+      "Модели, агенты, продукты, исследования и влияние искусственного интеллекта на бизнес и работу.",
   },
   {
-    slug: "research",
-    name: "Исследования",
+    slug: "finance-russia",
+    name: "Финансовый сектор РФ",
+    description:
+      "Банки, финтех, платежи, цифровой рубль, регулирование и банковские технологии.",
   },
-];
+  {
+    slug: "future-skills",
+    name: "Навыки будущего",
+    description:
+      "Изменения требований к специалистам, новые компетенции, роли и трансформация функций.",
+  },
+  {
+    slug: "bank-practice",
+    name: "Практика банков",
+    description:
+      "Практики банков в работе с сотрудниками, технологиями, развитием и организацией работы.",
+  },
+] as const;
 
-const TOPIC_NAMES = [
-  ...TOPICS,
-  {
-    slug: "products-tools",
-    name: "Продукты и инструменты",
-  },
-];
+function Arrow() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="17"
+      height="17"
+      viewBox="0 0 24 24"
+      fill="none"
+    >
+      <path
+        d="M5 12h13M13 6l6 6-6 6"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
 type HomeProps = {
   searchParams: Promise<{
@@ -75,7 +85,7 @@ type HomeProps = {
 
 export default async function Home({ searchParams }: HomeProps) {
   const params = await searchParams;
-  const activeTopic = params.topic;
+  const activeCategory = params.topic;
 
   const digest = await prisma.digest.findFirst({
     orderBy: {
@@ -118,18 +128,18 @@ export default async function Home({ searchParams }: HomeProps) {
     },
   });
 
-  let articles =
-    digest?.articles.map((item) => item.article) ?? [];
+  let articles = digest?.articles.map((item) => item.article) ?? [];
 
-  if (activeTopic) {
-    articles = articles.filter(
-      (article) =>
-        article.articleTopics[0]?.topic.slug === activeTopic,
+  if (activeCategory) {
+    articles = articles.filter((article) =>
+      article.articleTopics.some(
+        (item) => item.topic.slug === activeCategory,
+      ),
     );
   }
 
-  const activeTopicName =
-    TOPIC_NAMES.find((topic) => topic.slug === activeTopic)?.name ??
+  const activeCategoryName =
+    CATEGORIES.find((category) => category.slug === activeCategory)?.name ??
     null;
 
   const heroArticle = articles[0];
@@ -138,7 +148,6 @@ export default async function Home({ searchParams }: HomeProps) {
 
   return (
     <main className="min-h-screen bg-[#071016]">
-      {/* HEADER */}
       <header className="relative z-20 border-b border-[#c99a4a]/25 bg-[#071016]/95">
         <div className="mx-auto max-w-[1450px] px-6 sm:px-8 lg:px-12">
           <div className="flex min-h-[110px] items-center">
@@ -152,7 +161,7 @@ export default async function Home({ searchParams }: HomeProps) {
               </div>
 
               <div className="mt-3 text-[11px] uppercase tracking-[0.32em] text-[#b5ae9f]">
-                Главное сегодня
+                Learning Intelligence + Banking
               </div>
             </Link>
           </div>
@@ -161,7 +170,7 @@ export default async function Home({ searchParams }: HomeProps) {
             <Link
               href="/"
               className={`shrink-0 border-b-2 px-5 py-5 text-sm transition-colors ${
-                !activeTopic
+                !activeCategory
                   ? "border-[#d2a453] bg-[#c99a4a]/10 text-[#e3bc70]"
                   : "border-transparent text-[#c1baad] hover:text-[#e3bc70]"
               }`}
@@ -169,17 +178,17 @@ export default async function Home({ searchParams }: HomeProps) {
               Главная
             </Link>
 
-            {TOPICS.map((topic) => (
+            {CATEGORIES.map((category) => (
               <Link
-                key={topic.slug}
-                href={`/?topic=${topic.slug}`}
+                key={category.slug}
+                href={`/?topic=${category.slug}`}
                 className={`shrink-0 border-b-2 px-5 py-5 text-sm transition-colors ${
-                  activeTopic === topic.slug
+                  activeCategory === category.slug
                     ? "border-[#d2a453] bg-[#c99a4a]/10 text-[#e3bc70]"
                     : "border-transparent text-[#c1baad] hover:text-[#e3bc70]"
                 }`}
               >
-                {topic.name}
+                {category.name}
               </Link>
             ))}
 
@@ -193,7 +202,6 @@ export default async function Home({ searchParams }: HomeProps) {
         </div>
       </header>
 
-      {/* HERO */}
       <section className="relative overflow-hidden border-b border-[#c99a4a]/30 bg-[#080f14]">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_70%_50%,rgba(106,78,39,0.25),transparent_38%)]" />
 
@@ -203,20 +211,19 @@ export default async function Home({ searchParams }: HomeProps) {
               <div className="mb-5 text-[11px] font-semibold uppercase tracking-[0.28em] text-[#d0a55a]">
                 {digest
                   ? `Выпуск от ${formatDate(digest.periodStart)}`
-                  : "Сегодняшний выпуск"}
+                  : "Текущий выпуск"}
               </div>
 
-              {activeTopicName && (
+              {activeCategoryName && (
                 <div className="mb-4 text-sm text-[#a89a81]">
-                  Рубрика: {activeTopicName}
+                  Рубрика: {activeCategoryName}
                 </div>
               )}
 
               {heroArticle ? (
                 <>
                   <h1 className="max-w-[1250px] text-4xl leading-[1.03] tracking-[-0.045em] text-[#f2e9d6] sm:text-5xl lg:text-[56px]">
-                    {heroArticle.translatedTitle ||
-                      heroArticle.title}
+                    {heroArticle.translatedTitle || heroArticle.title}
                   </h1>
 
                   {heroArticle.excerpt && (
@@ -226,16 +233,14 @@ export default async function Home({ searchParams }: HomeProps) {
                   )}
 
                   <div className="mt-6 flex flex-wrap gap-2">
-                    {getTags(heroArticle.articleTags).map(
-                      (tag) => (
-                        <span
-                          key={tag}
-                          className="rounded-md border border-[#6d644f] bg-[#111a20]/80 px-3 py-1.5 text-xs text-[#d0c5af]"
-                        >
-                          #{tag}
-                        </span>
-                      ),
-                    )}
+                    {getTags(heroArticle.articleTags).map((tag) => (
+                      <span
+                        key={tag}
+                        className="rounded-md border border-[#6d644f] bg-[#111a20]/80 px-3 py-1.5 text-xs text-[#d0c5af]"
+                      >
+                        #{tag}
+                      </span>
+                    ))}
                   </div>
 
                   <div className="mt-7">
@@ -251,13 +256,13 @@ export default async function Home({ searchParams }: HomeProps) {
               ) : (
                 <>
                   <h1 className="max-w-[720px] text-5xl leading-[1.03] tracking-[-0.045em] text-[#f2e9d6]">
-                    {activeTopicName ?? "МирAI"}
+                    {activeCategoryName ?? "МирAI"}
                   </h1>
 
                   <p className="mt-6 max-w-[650px] text-base leading-7 text-[#bdb5a6]">
-                    {activeTopicName
-                      ? "Материалы этой рубрики в сегодняшнем выпуске."
-                      : "Главное о том, что нового появляется в мире искусственного интеллекта и технологий."}
+                    {activeCategoryName
+                      ? "В этой рубрике пока нет материалов текущего выпуска."
+                      : "Журнал о событиях, идеях и технологиях, которые меняют обучение, банки и рабочую среду."}
                   </p>
                 </>
               )}
@@ -275,7 +280,6 @@ export default async function Home({ searchParams }: HomeProps) {
               )}
 
               <div className="absolute inset-0 bg-gradient-to-r from-[#080f14] via-transparent to-[#080f14]/15" />
-
               <div className="absolute inset-0 bg-gradient-to-t from-[#080f14] via-transparent to-transparent" />
 
               <div className="absolute right-8 top-8 hidden w-36 border border-[#6b5230] bg-[#d9bd82] px-5 py-6 text-center text-[#2c2113] shadow-2xl lg:block">
@@ -292,15 +296,12 @@ export default async function Home({ searchParams }: HomeProps) {
         </div>
       </section>
 
-      {/* LATEST */}
       <section className="parchment-section">
         <div className="relative mx-auto max-w-[1450px] px-6 py-12 sm:px-8 lg:px-12">
           <div className="mb-7 flex items-end justify-between">
             <div>
               <h2 className="text-3xl tracking-[-0.03em] text-[#21190f]">
-                {activeTopicName
-                  ? activeTopicName
-                  : "Материалы выпуска"}
+                {activeCategoryName ?? "Материалы выпуска"}
               </h2>
 
               <div className="mt-2 h-px w-28 bg-[#8e6b37]/50" />
@@ -318,8 +319,7 @@ export default async function Home({ searchParams }: HomeProps) {
           {latestArticles.length > 0 ? (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
               {latestArticles.map((article) => {
-                const source =
-                  article.articleSources[0]?.source;
+                const source = article.articleSources[0]?.source;
                 const tags = getTags(article.articleTags);
 
                 return (
@@ -349,8 +349,7 @@ export default async function Home({ searchParams }: HomeProps) {
 
                     <div className="flex flex-1 flex-col p-4">
                       <h3 className="text-[18px] font-semibold leading-[1.15] tracking-[-0.02em] text-[#22190e]">
-                        {article.translatedTitle ||
-                          article.title}
+                        {article.translatedTitle || article.title}
                       </h3>
 
                       {article.excerpt && (
@@ -366,19 +365,14 @@ export default async function Home({ searchParams }: HomeProps) {
                           </span>
 
                           <span>
-                            {formatDate(
-                              article.publishedAt,
-                            )}
+                            {formatDate(article.publishedAt)}
                           </span>
                         </div>
 
                         {tags.length > 0 && (
                           <div className="mt-3 flex flex-wrap gap-1.5">
                             {tags.map((tag) => (
-                              <span
-                                className="tag"
-                                key={tag}
-                              >
+                              <span className="tag" key={tag}>
                                 #{tag}
                               </span>
                             ))}
@@ -392,14 +386,12 @@ export default async function Home({ searchParams }: HomeProps) {
             </div>
           ) : (
             <div className="border border-[#6d5835]/25 bg-[#f1dfb9]/50 p-8 text-[#5f513d]">
-              В этой рубрике пока нет материалов
-              сегодняшнего выпуска.
+              В этой рубрике пока нет материалов текущего выпуска.
             </div>
           )}
         </div>
       </section>
 
-      {/* ATTENTION + COLLECTIONS */}
       <section className="dark-section">
         <div className="mx-auto max-w-[1450px] px-6 py-12 sm:px-8 lg:px-12">
           <div className="grid gap-10 lg:grid-cols-[1.08fr_0.92fr]">
@@ -414,39 +406,32 @@ export default async function Home({ searchParams }: HomeProps) {
 
               <div className="overflow-hidden rounded-sm border border-[#765a32]/45">
                 {attentionArticles.length > 0 ? (
-                  attentionArticles.map(
-                    (article, index) => (
-                      <Link
-                        key={article.id}
-                        href={`/articles/${article.id}`}
-                        className="flex gap-5 border-b border-[#765a32]/25 px-5 py-5 last:border-0 transition hover:bg-[#c99a4a]/5"
-                      >
-                        <div className="w-10 shrink-0 text-2xl text-[#d3a24f]">
-                          {String(index + 1).padStart(
-                            2,
-                            "0",
-                          )}
-                        </div>
+                  attentionArticles.map((article, index) => (
+                    <Link
+                      key={article.id}
+                      href={`/articles/${article.id}`}
+                      className="flex gap-5 border-b border-[#765a32]/25 px-5 py-5 transition last:border-0 hover:bg-[#c99a4a]/5"
+                    >
+                      <div className="w-10 shrink-0 text-2xl text-[#d3a24f]">
+                        {String(index + 1).padStart(2, "0")}
+                      </div>
 
-                        <div>
-                          <h3 className="text-base text-[#e5dcc9]">
-                            {article.translatedTitle ||
-                              article.title}
-                          </h3>
+                      <div>
+                        <h3 className="text-base text-[#e5dcc9]">
+                          {article.translatedTitle || article.title}
+                        </h3>
 
-                          {article.excerpt && (
-                            <p className="mt-1 text-sm leading-5 text-[#999287]">
-                              {article.excerpt}
-                            </p>
-                          )}
-                        </div>
-                      </Link>
-                    ),
-                  )
+                        {article.excerpt && (
+                          <p className="mt-1 text-sm leading-5 text-[#999287]">
+                            {article.excerpt}
+                          </p>
+                        )}
+                      </div>
+                    </Link>
+                  ))
                 ) : (
                   <div className="px-5 py-6 text-sm leading-6 text-[#999287]">
-                    Здесь будут остальные материалы
-                    сегодняшнего выпуска.
+                    Здесь будут остальные материалы текущего выпуска.
                   </div>
                 )}
               </div>
@@ -455,39 +440,18 @@ export default async function Home({ searchParams }: HomeProps) {
             <div>
               <div className="mb-6 flex items-center gap-4">
                 <h2 className="section-heading text-3xl">
-                  Темы
+                  Рубрики
                 </h2>
 
                 <div className="h-px flex-1 bg-[#8b6b38]/40" />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                {[
-                  [
-                    "Модели и агенты",
-                    "Новые модели, AI-агенты и методы",
-                    "ai-tech",
-                  ],
-                  [
-                    "Продукты и инструменты",
-                    "AI-сервисы, новые функции и возможности",
-                    "products-tools",
-                  ],
-                  [
-                    "Бизнес и инновации",
-                    "Компании, рынки и новые сценарии",
-                    "business-innovation",
-                  ],
-                  [
-                    "Исследования",
-                    "Научные результаты и эксперименты",
-                    "research",
-                  ],
-                ].map(([title, subtitle, topic]) => (
+                {CATEGORIES.map((category) => (
                   <Link
-                    key={title}
-                    href={`/?topic=${topic}`}
-                    className="group relative min-h-[125px] overflow-hidden rounded-sm border border-[#765a32]/50 bg-[#101a20] p-5 transition hover:border-[#c99a4a]"
+                    key={category.slug}
+                    href={`/?topic=${category.slug}`}
+                    className="group relative min-h-[145px] overflow-hidden rounded-sm border border-[#765a32]/50 bg-[#101a20] p-5 transition hover:border-[#c99a4a]"
                   >
                     <div className="absolute right-4 top-2 text-5xl text-[#c99a4a]/10 transition group-hover:text-[#c99a4a]/20">
                       ✦
@@ -495,11 +459,11 @@ export default async function Home({ searchParams }: HomeProps) {
 
                     <div className="relative">
                       <div className="text-lg text-[#e3d9c7]">
-                        {title}
+                        {category.name}
                       </div>
 
                       <div className="mt-2 text-xs leading-5 text-[#a19a8d]">
-                        {subtitle}
+                        {category.description}
                       </div>
                     </div>
                   </Link>
@@ -510,7 +474,6 @@ export default async function Home({ searchParams }: HomeProps) {
         </div>
       </section>
 
-      {/* ARCHIVE LINK */}
       <section className="parchment-section border-t border-[#8e6b37]/40">
         <div className="relative mx-auto max-w-[1450px] px-6 py-12 sm:px-8 lg:px-12">
           <div className="flex flex-col items-center justify-between gap-8 md:flex-row">
@@ -520,8 +483,7 @@ export default async function Home({ searchParams }: HomeProps) {
               </div>
 
               <blockquote className="mt-3 text-2xl leading-9 text-[#302417]">
-                Прошлые выпуски остаются доступными
-                для чтения.
+                Прошлые выпуски остаются доступными для чтения.
               </blockquote>
             </div>
 
@@ -536,34 +498,19 @@ export default async function Home({ searchParams }: HomeProps) {
         </div>
       </section>
 
-      {/* FOOTER */}
       <footer className="border-t border-[#c99a4a]/20 bg-[#060d12]">
         <div className="mx-auto flex max-w-[1450px] flex-col gap-5 px-6 py-8 text-sm text-[#817c71] sm:px-8 md:flex-row md:items-center md:justify-between lg:px-12">
           <div>
-            <div className="text-[#d0a55a]">
-              МирAI
-            </div>
+            <div className="text-[#d0a55a]">МирAI</div>
 
             <div className="mt-1 text-xs">
               Журнал о новых событиях, идеях и технологиях
-              искусственного интеллекта
+              искусственного интеллекта, обучения и банковского сектора.
             </div>
           </div>
 
           <div className="flex gap-6 text-xs">
-            <a
-              href="#"
-              className="hover:text-[#d0a55a]"
-            >
-              О проекте
-            </a>
-
-            <a
-              href="#"
-              className="hover:text-[#d0a55a]"
-            >
-              Предложить материал
-            </a>
+            <span>Learning Intelligence + Banking</span>
           </div>
         </div>
       </footer>

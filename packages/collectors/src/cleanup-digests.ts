@@ -83,7 +83,7 @@ async function main() {
     } else if (
       !isRelevantCandidate(
         digestArticle.article.title,
-        digestArticle.article.originalContent.slice(0, 12000),
+        (digestArticle.article.originalContent ?? "").slice(0, 12000),
         currentSource,
       )
     ) {
