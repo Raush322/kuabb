@@ -23,6 +23,7 @@ type ExtractedArticle = {
   title: string;
   author: string | null;
   publishedAt: string | null;
+  imageUrl: string | null;
   text: string;
 };
 
@@ -1358,6 +1359,14 @@ async function processCandidate(params: {
       candidate.url,
     );
 
+    if (!existingArticle.imageUrl && details.imageUrl) {
+      await prisma.article.update({
+        where: { id: existingArticle.id },
+        data: { imageUrl: details.imageUrl },
+      });
+      console.log("Article image saved:", details.imageUrl);
+    }
+
     await assignPrimaryTopic(
       existingArticle.id,
       existingArticle.title,
@@ -1415,7 +1424,7 @@ async function processCandidate(params: {
         : null,
       language: sourceConfig.language,
       excerpt: null,
-      imageUrl: null,
+      imageUrl: details.imageUrl,
       contentHash,
       originalContent: details.text,
       status: "NEW",
